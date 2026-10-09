@@ -22,7 +22,8 @@ Module._load = function (request, parent, isMain) {
 }
 
 const dist = path.join(__dirname, '..', 'dist')
-const { default: PromptOptimizerPlugin } = require(path.join(dist, 'index.js'))
+const mod = require(path.join(dist, 'index.js'))
+const apply = mod.default || mod.apply
 const { defaultConfig, PRESET_ROLES } = require(path.join(dist, 'config.js'))
 
 // 2) 构造 mock ctx
@@ -48,9 +49,8 @@ const ctx = {
   }
 }
 
-// 3) 实例化并 apply
-const plugin = new PromptOptimizerPlugin(ctx)
-plugin.apply()
+// 3) 执行插件 apply
+apply(ctx)
 
 let passed = 0
 const ok = (name, cond) => {

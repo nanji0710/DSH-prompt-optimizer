@@ -2,16 +2,30 @@
   "name": "prompt-optimizer",
   "version": "0.1.0",
   "description": "DSH 一键提示词优化插件，支持本地规则零成本优化与角色化 LLM 深度优化",
-  "main": "dist/index.js",
-  "types": "dist/index.d.ts",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": "./dist/index.js",
+    "./package.json": "./package.json"
+  },
   "files": [
     "dist",
+    "cordis.patch.yml",
     "cordis.yml",
     "icon.svg",
     "README.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "entry": "./dist/client/index.js",
+      "platform": "web"
+    }
+  },
   "scripts": {
     "build": "npm run clean && npm run build:server && npm run build:client",
     "build:server": "tsc -p tsconfig.json",

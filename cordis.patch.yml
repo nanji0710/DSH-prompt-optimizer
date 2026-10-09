@@ -1,0 +1,5 @@
+# DSH bundle 配方：将插件插入配置树
+# 插件按包名解析，无需 checkout 相对路径
+- insert:
+    - id: prompt-optimizer
+      name: 'prompt-optimizer'
