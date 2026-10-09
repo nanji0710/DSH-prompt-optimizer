@@ -1,0 +1,15 @@
+name: prompt-optimizer
+displayName: 提示词优化助手
+description: 输入框一键优化提示词，支持本地规则零成本优化与角色化 LLM 深度优化
+version: 1.3.0
+author: your-name
+icon: ./icon.svg
+client:
+  entry: dist/client/index.js
+  config:
+    schema: ./dist/config.js
+dependencies:
+  - '@deepseek-ai/dsh-client-slots'
+  - '@deepseek-ai/dsh-client-composer'
+  - '@deepseek-ai/dsh-client-llm'
+  - '@deepseek-ai/dsh-client-settings'
