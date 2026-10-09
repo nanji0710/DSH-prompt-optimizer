@@ -4,7 +4,7 @@
 
 ![dsh-version](https://img.shields.io/badge/DSH-v0.2.0--rc.2-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
-![version](https://img.shields.io/badge/version-1.3.0-orange)
+![version](https://img.shields.io/badge/version-0.1.0-orange)
 
 ## ✨ 功能特性
 
@@ -25,12 +25,12 @@
 ### 方式一：在线安装（推荐）
 
 ```bash
-dsh plugin add https://github.com/your-name/dsh-prompt-optimizer
+dsh plugin add https://github.com/nanji0710/DSH-prompt-optimizer
 ```
 
 ### 方式二：手动安装
 
-1. 前往 [Releases](https://github.com/your-name/dsh-prompt-optimizer/releases) 下载最新版本 `prompt-optimizer-v1.3.0.zip`
+1. 前往 [Releases](https://github.com/nanji0710/DSH-prompt-optimizer/releases) 下载最新版本 `prompt-optimizer-v0.1.0.zip`
 2. 解压到本地目录
 3. 在 DSH 中执行：
 
