@@ -14,6 +14,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# 显式声明权限：创建/发布 Release 需要 contents 写权限（新仓库默认只读）
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Typecheck & Build & Smoke Test
