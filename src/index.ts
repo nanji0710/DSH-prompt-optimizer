@@ -22,14 +22,12 @@ const BASE_OPTIMIZE_TEMPLATE = `请严格按照以下4个步骤优化用户输�
 
 /** 插件主体：注册 promptOptimizer 服务 */
 export function apply(ctx: any) {
-  // 注入默认配置（兼容不同版本 config API）
-  if (ctx.config?.defaults) {
-    ctx.config.defaults(defaultConfig)
-  }
+  // 注入默认配置（config 服务已在 inject 中声明，必然存在）
+  ctx.config.defaults(defaultConfig)
 
   /** 读取当前配置，与默认值做浅合并以防御缺字段 */
   const getConfig = (): PluginConfig => {
-    const cfg = ctx.config.get ? ctx.config.get() : undefined
+    const cfg = ctx.config.get()
     return {
       ...defaultConfig,
       ...cfg,
@@ -119,6 +117,9 @@ export function apply(ctx: any) {
     getAllRoles
   })
 }
+
+/** Cordis 依赖声明：config 必填；llm 为可选（未配置模型时降级本地规则引擎） */
+apply.inject = { config: '', llm: { optional: true } }
 
 /** 兼容 default 导入形态（类/函数均可被 Cordis loader 识别） */
 export default apply

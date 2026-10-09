@@ -62,6 +62,8 @@ const ok = (name, cond) => {
 ;(async () => {
   const service = registered.promptOptimizer
   ok('服务 promptOptimizer 已注册', typeof service?.optimize === 'function')
+  ok('插件声明了 config 必填依赖注入', !!apply.inject && apply.inject.config === '')
+  ok('插件声明了 llm 可选依赖注入', !!apply.inject && apply.inject.llm?.optional === true)
   ok('getAllRoles 返回内置 6 个角色', service.getAllRoles().length === 6)
   ok('默认角色为通用角色', service.getCurrentRole().id === 'general')
 
