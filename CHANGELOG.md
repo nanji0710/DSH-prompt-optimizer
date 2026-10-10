@@ -2,6 +2,20 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.2] - 2026-10-10
+
+在隔离实例上做了端到端实测（真实 provider、真实模型、真实浏览器），把 0.3.1 遗留的两处问题修掉。
+
+### 修复
+- **设置页模型提示显示成 `当前生效：[object Object]`**：`SettingsPage.tsx` 的模型 hint 用模板字符串拼了 JSX 元素（`${effectiveModel ? <code>{...}</code> : ...}`），被 `String()` 强制转换。改为 JSX 片段插值。
+- **档位被上游拒绝时不再只降级为本地规则**：0.3.1 只按模型元数据校验档位，但**元数据说支持、上游仍可能拒绝**——实测 workbuddy 的 `deepseek-v4.1-flash` 声明支持 `off`，wire 上给 `off` 却回 400「模型不支持该思考强度，请调整」且零正文。现在遇到这类报错会换元数据里的**另一个档**重试（默认档 → 其余非 `off` 档）。
+  - ⚠️ **踩过的坑**：第一版重试是「删掉 `reasoningEffort` 再跑一次」，反而必然再错——删掉后 pi-ai 走 `!options.reasoningEffort` 那条分支，会把模型的 `thinkingLevelMap.off` **自动写到 wire 上**，等于又发了一次 `off`。必须换档，不能删键。
+  - 实测修复后 workbuddy 的 7 个档位全部可用：`unset` / `off` / `low` / `high` / `max` / `minimal` / `medium` 均返回正文（修复前 `off` / `minimal` / `medium` 三条 400）。
+
+### 测试
+- 端到端实测记录（隔离实例 `po-check`，独立端口）：`/models` 返回真实模型与每模型档位（deepseek-official 2 个模型各带 `off/low/high/max` 与 `defaultEffort: high`；workbuddy 17 个模型，档位各不相同）；`mode:'local'` 确认已随请求上传并生效；设置页 5 个下拉（优化模式 / Provider / 模型 / 思考强度 / 优化角色）逐项核对无误；输入框 ✨ 按钮点击后 2 秒内返回 LLM 改写结果，hint 显示「已优化（LLM 改写）」。
+- 单元测试仍为 **109/109 全绿**（本次改动不涉及本地引擎）。
+
 ## [0.3.1] - 2026-10-10
 
 修两个 0.3.0 实测暴露的问题：**思考强度错误导致 LLM 路径失败**、**本地规则对短诉求过度膨胀**。

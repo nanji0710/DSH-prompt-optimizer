@@ -220,12 +220,18 @@ function ApiSection() {
               {loadingModels
                 ? `正在读取 ${effectiveProvider} 的模型列表…`
                 : modelsReady && models.length > 0
-                  ? `当前接口共 ${models.length} 个模型。当前生效：${
-                      effectiveModel ? <code>{effectiveModel}</code> : '（未解析到模型）'
-                    }`
-                  : `未能读取模型列表，可直接使用 DSH 默认。当前生效：${
-                      effectiveModel ? <code>{effectiveModel}</code> : '（未解析到模型）'
-                    }`}
+                  ? (
+                      <>
+                        当前接口共 {models.length} 个模型。当前生效：
+                        {effectiveModel ? <code>{effectiveModel}</code> : '（未解析到模型）'}
+                      </>
+                    )
+                  : (
+                      <>
+                        未能读取模型列表，可直接使用 DSH 默认。当前生效：
+                        {effectiveModel ? <code>{effectiveModel}</code> : '（未解析到模型）'}
+                      </>
+                    )}
             </p>
           </div>
 

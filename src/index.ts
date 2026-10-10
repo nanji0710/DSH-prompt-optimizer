@@ -172,7 +172,7 @@ export function apply(ctx: any) {
     model: string,
     config: PluginConfig,
     signal?: AbortSignal
-  ): Promise<{ effort?: string; warning?: string }> => {
+  ): Promise<{ effort?: string; fallbacks?: string[]; warning?: string }> => {
     let info: ModelReasoningInfo | undefined
     try {
       const detail = await llm?.resolveModelInfo?.(provider, model, signal)
@@ -186,20 +186,33 @@ export function apply(ctx: any) {
     }
 
     const efforts = info?.efforts ?? []
-    const wanted = (config.llmReasoningEffort || '').trim()
-    if (wanted) {
-      if (efforts.some((e) => e.id === wanted)) return { effort: wanted }
-      return {
-        warning: `模型 "${model}" 不支持思考强度 "${wanted}"，已改用自动档（可选：${
-          efforts.map((e) => e.id).join(' / ') || '无'
-        }）`
-      }
-    }
-
     // 自动档：优先模型声明的默认档，否则取它支持的最轻一档。
     // `off` 放在最后考虑 —— 它在不少上游的 wire 映射里不被接受。
     const auto = info?.defaultEffort ?? efforts.find((e) => e.id !== 'off')?.id
-    return { effort: auto }
+    // 备选档：元数据说支持、但上游可能仍拒绝，按「默认档 → 其余非 off 档」排序。
+    const fallbacks = (() => {
+      const order = [auto, ...efforts.map((e) => e.id)]
+      const out: string[] = []
+      for (const id of order) {
+        if (!id || id === 'off' || out.includes(id)) continue
+        out.push(id)
+      }
+      return out
+    })()
+
+    const wanted = (config.llmReasoningEffort || '').trim()
+    if (wanted) {
+      if (efforts.some((e) => e.id === wanted)) return { effort: wanted, fallbacks }
+      return {
+        effort: auto,
+        fallbacks,
+        warning: `模型 "${model}" 不支持思考强度 "${wanted}"，已改用自动档 "${
+          auto ?? '（无）'
+        }"（可选：${efforts.map((e) => e.id).join(' / ') || '无'}）`
+      }
+    }
+
+    return { effort: auto, fallbacks }
   }
 
   /**
@@ -252,20 +265,55 @@ export function apply(ctx: any) {
     // ⚠️ finish 分片把终止结果放在 **reason** 下（`{ type:'finish', reason:{ kind, failure } }`），
     // 不是 `chunk.kind` / `chunk.failure` —— 按后者读会永远拿到 undefined，把
     // MISSING_CREDENTIAL / RATE_LIMIT 之类的真实原因吞掉，只剩一句「模型未返回内容」。
-    let text = ''
-    let reasoningChars = 0
-    let finish: any = null
-    let chunkTypes = new Set<string>()
-    for await (const chunk of llm.stream(options)) {
-      if (chunk?.type) chunkTypes.add(String(chunk.type))
-      if (chunk?.type === 'text-delta') {
-        text += chunk.text ?? ''
-      } else if (chunk?.type === 'reasoning-delta') {
-        reasoningChars += (chunk.text ?? '').length
-      } else if (chunk?.type === 'finish') {
-        finish = chunk
+    const drain = async (opts: Record<string, unknown>) => {
+      let text = ''
+      let reasoningChars = 0
+      let finish: any = null
+      const chunkTypes = new Set<string>()
+      for await (const chunk of llm.stream(opts)) {
+        if (chunk?.type) chunkTypes.add(String(chunk.type))
+        if (chunk?.type === 'text-delta') {
+          text += chunk.text ?? ''
+        } else if (chunk?.type === 'reasoning-delta') {
+          reasoningChars += (chunk.text ?? '').length
+        } else if (chunk?.type === 'finish') {
+          finish = chunk
+        }
+      }
+      return { text, reasoningChars, finish, chunkTypes }
+    }
+
+    let result = await drain(options)
+    let usedEffort = effort.effort
+
+    // ★ 元数据声明支持的档位，上游仍可能拒绝。实测 workbuddy 的
+    // deepseek-v4.1-flash **声明**支持 `off`，但 wire 上给 `off` 会回
+    // 400「模型不支持该思考强度，请调整」，finish 里零正文。
+    // 处理方式：换成元数据里的**另一个档**重试（不是删掉 reasoningEffort）——
+    // 删掉会让 pi-ai 走 `!options.reasoningEffort` 那条分支，把模型的
+    // `thinkingLevelMap.off` 自动写到 wire 上，等于又发了一次 `off`，必然再错一次。
+    if (!result.text.trim() && usedEffort) {
+      const failureMessage = String(result.finish?.reason?.failure?.message ?? '')
+      const rejectedEffort = /思考强度|reasoning.?effort|thinking/i.test(failureMessage)
+      if (rejectedEffort) {
+        for (const candidate of effort.fallbacks ?? []) {
+          if (candidate === usedEffort) continue
+          ctx.logger?.warn?.(
+            `prompt-optimizer: 模型 "${model}" 拒绝了思考强度 "${usedEffort}"（${failureMessage.slice(
+              0,
+              120
+            )}），改用 "${candidate}" 重试`
+          )
+          result = await drain({ ...options, reasoningEffort: candidate })
+          usedEffort = candidate
+          if (result.text.trim()) break
+          const nextMessage = String(result.finish?.reason?.failure?.message ?? '')
+          if (!/思考强度|reasoning.?effort|thinking/i.test(nextMessage)) break
+        }
       }
     }
+
+    const { text, reasoningChars, finish, chunkTypes } = result
 
     if (!text.trim()) {
       const reason = finish?.reason
