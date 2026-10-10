@@ -17,15 +17,18 @@
  */
 import { PRESET_ROLES } from '../config'
 import {
+  MODELS_ENDPOINT,
   OPTIMIZE_ENDPOINT,
   PROVIDERS_ENDPOINT,
+  type ModelInfo,
+  type ModelsResponseBody,
   type OptimizeResponseBody,
   type ProvidersResponseBody,
   type ProviderInfo,
   type SettingsPayload
 } from '../protocol'
 
-export type { ProviderInfo, SettingsPayload }
+export type { ProviderInfo, SettingsPayload, ModelInfo }
 
 /** 端点是否可用。端点是同源 HTTP 路由，浏览器环境下恒为 true。 */
 export function isBridgeReady(): boolean {
@@ -95,8 +98,10 @@ export async function requestOptimize(
 
 /** 把客户端当前配置转成请求载荷。 */
 export function toSettingsPayload(config: {
+  optimizeMode?: 'local' | 'llm'
   llmProvider?: string
   llmModel?: string
+  llmReasoningEffort?: string
   llmTemperature?: number
   localRules?: any
 }): SettingsPayload {
@@ -108,8 +113,12 @@ export function toSettingsPayload(config: {
   ]
   const role = allRoles.find((r) => r?.id === currentId)
   return {
+    // 模式必须上传：以前不带它，Node 半边只能从默认值取 'llm'，
+    // 于是用户在设置页选「本地规则」也照样发模型请求。
+    mode: config.optimizeMode,
     provider: config.llmProvider ?? '',
     model: config.llmModel ?? '',
+    reasoningEffort: config.llmReasoningEffort ?? '',
     temperature: config.llmTemperature,
     rolePrompt: role?.rolePrompt ?? '',
     localRules: rules
@@ -131,3 +140,22 @@ export async function requestProviders(): Promise<{
   }
   return { providers: [], default: null }
 }
+
+/**
+ * 拉取某个 provider 支持的模型及其思考强度档位。
+ *
+ * 思考强度下拉的选项只能来自这里：档位必须与模型元数据一致，
+ * 否则宿主会在 provider I/O 之前抛 UNSUPPORTED_REASONING_EFFORT，
+ * workbuddy 这类上游还会回 400「模型不支持该思考强度，请调整」。
+ */
+export async function requestModels(provider: string): Promise<ModelInfo[]> {
+  if (!provider) return []
+  try {
+    const body = await postJson<ModelsResponseBody>(MODELS_ENDPOINT, { provider })
+    if (body?.ok) return body.models ?? []
+  } catch {
+    // 静默失败：模型框退化回可手填的输入框
+  }
+  return []
+}
+

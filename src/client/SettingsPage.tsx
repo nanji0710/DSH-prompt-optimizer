@@ -4,14 +4,19 @@
  * 全部配置写在浏览器侧 localStorage，与输入框按钮共用同一份状态。
  * 仅使用主题 token（--dsw-alias-*）着色，不引入任何 Harness Client 包。
  *
- * 「AI 接口」一节通过 connection RPC 读取宿主已注册的 provider 列表作为下拉
- * 候选；读取失败时退化为纯手填输入框，不影响保存。
+ * 「AI 接口」一节通过插件自注册的 HTTP 端点读取宿主已注册的 provider 与
+ * 每个 provider 支持的模型（含思考强度档位）作为下拉候选；读取失败时
+ * 退化为可手填的输入框，不影响保存。
+ *
+ * ★ 「思考强度」必须做成下拉而不是输入框：档位由模型元数据（reasoning.efforts）
+ * 决定，手填一个模型不支持的档位会被宿主在发起请求前直接拒绝，workbuddy 这类
+ * 上游还会回 400「模型不支持该思考强度，请调整」。
  */
 import { useEffect, useState } from 'react'
 import { PRESET_ROLES } from '../config'
 import type { RoleItem } from '../config'
 import { useConfig, setConfig, resetConfig } from './store'
-import { isBridgeReady, requestProviders, type ProviderInfo } from './bridge'
+import { isBridgeReady, requestModels, requestProviders, type ModelInfo, type ProviderInfo } from './bridge'
 
 /**
  * 本地规则开关。
@@ -87,13 +92,17 @@ const buttonStyle: Record<string, string | number> = {
   cursor: 'pointer',
 }
 
-/** 「AI 接口」一节：模式、provider、模型、温度。 */
+/** 「AI 接口」一节：模式、provider、模型、思考强度、温度。 */
 function ApiSection() {
   const cfg = useConfig()
   const [providers, setProviders] = useState<ProviderInfo[]>([])
   const [defaultSelection, setDefaultSelection] = useState<{ provider?: string; model?: string } | null>(
     null,
   )
+  /** 已成功拉取模型的 provider（防止切换 provider 时短暂显示上一个 provider 的档位）。 */
+  const [modelsFor, setModelsFor] = useState('')
+  const [models, setModels] = useState<ModelInfo[]>([])
+  const [loadingModels, setLoadingModels] = useState(false)
   const bridgeReady = isBridgeReady()
 
   useEffect(() => {
@@ -112,6 +121,31 @@ function ApiSection() {
   const usingLlm = cfg.optimizeMode === 'llm'
   const effectiveProvider = cfg.llmProvider.trim() || defaultSelection?.provider || ''
   const effectiveModel = cfg.llmModel.trim() || defaultSelection?.model || ''
+
+  // provider 变化（或解析出 DSH 默认 provider）后重新拉取模型列表。
+  useEffect(() => {
+    if (!bridgeReady || !usingLlm || !effectiveProvider) {
+      setModels([])
+      setModelsFor('')
+      return
+    }
+    let alive = true
+    setLoadingModels(true)
+    void requestModels(effectiveProvider).then((result) => {
+      if (!alive) return
+      setModels(result)
+      setModelsFor(effectiveProvider)
+      setLoadingModels(false)
+    })
+    return () => {
+      alive = false
+    }
+  }, [bridgeReady, usingLlm, effectiveProvider])
+
+  const modelsReady = modelsFor === effectiveProvider
+  const currentModel = modelsReady ? models.find((m) => m.id === effectiveModel) : undefined
+  const efforts = currentModel?.reasoning?.efforts ?? []
+  const autoEffort = currentModel?.reasoning?.defaultEffort ?? ''
 
   return (
     <div style={fieldStyle}>
@@ -134,37 +168,91 @@ function ApiSection() {
         <>
           <div style={{ marginTop: 16 }}>
             <label style={labelStyle}>接口 / Provider</label>
-            <input
+            <select
               style={inputStyle}
-              list="prompt-optimizer-providers"
               value={cfg.llmProvider}
-              placeholder={effectiveProvider || '留空则使用 DSH 当前默认模型'}
               onChange={(e) => setConfig({ llmProvider: e.target.value })}
-            />
-            <datalist id="prompt-optimizer-providers">
+            >
+              <option value="">
+                跟随 DSH 默认{defaultSelection?.provider ? `（${defaultSelection.provider}）` : ''}
+              </option>
               {providers.map((provider) => (
                 <option key={provider.id} value={provider.id}>
                   {provider.name}
+                  {provider.name === provider.id ? '' : `（${provider.id}）`}
                 </option>
               ))}
-            </datalist>
+              {/* 已保存但宿主当前未注册的值：保留它，避免下拉 silently 改掉用户配置 */}
+              {cfg.llmProvider && !providers.some((p) => p.id === cfg.llmProvider) && (
+                <option value={cfg.llmProvider}>{cfg.llmProvider}（宿主未注册）</option>
+              )}
+            </select>
             <p style={hintStyle}>
               {bridgeReady
-                ? `宿主已注册 ${providers.length} 个接口，可直接选择或手填。留空时使用 DSH 默认：${effectiveProvider || '（未知）'}`
+                ? `宿主已注册 ${providers.length} 个接口。跟随 DSH 默认时实际使用：${
+                    effectiveProvider || '（未解析到）'
+                  }`
                 : '当前宿主没有可用的 connection 服务，将只能使用本地规则。'}
             </p>
           </div>
 
           <div style={{ marginTop: 16 }}>
-            <label style={labelStyle}>模型名称</label>
-            <input
+            <label style={labelStyle}>模型</label>
+            <select
               style={inputStyle}
               value={cfg.llmModel}
-              placeholder={effectiveModel || '留空则使用 DSH 当前默认模型'}
               onChange={(e) => setConfig({ llmModel: e.target.value })}
-            />
+            >
+              <option value="">
+                跟随 DSH 默认{defaultSelection?.model ? `（${defaultSelection.model}）` : ''}
+              </option>
+              {models.map((model) => (
+                <option key={model.id} value={model.id}>
+                  {model.name}
+                  {model.name === model.id ? '' : `（${model.id}）`}
+                </option>
+              ))}
+              {cfg.llmModel && !models.some((m) => m.id === cfg.llmModel) && (
+                <option value={cfg.llmModel}>{cfg.llmModel}（不在当前接口的列表中）</option>
+              )}
+            </select>
             <p style={hintStyle}>
-              当前生效：<code>{effectiveModel || '（未解析到模型，请填写或先配置 DSH 默认模型）'}</code>
+              {loadingModels
+                ? `正在读取 ${effectiveProvider} 的模型列表…`
+                : modelsReady && models.length > 0
+                  ? `当前接口共 ${models.length} 个模型。当前生效：${
+                      effectiveModel ? <code>{effectiveModel}</code> : '（未解析到模型）'
+                    }`
+                  : `未能读取模型列表，可直接使用 DSH 默认。当前生效：${
+                      effectiveModel ? <code>{effectiveModel}</code> : '（未解析到模型）'
+                    }`}
+            </p>
+          </div>
+
+          <div style={{ marginTop: 16 }}>
+            <label style={labelStyle}>思考强度</label>
+            <select
+              style={inputStyle}
+              value={cfg.llmReasoningEffort}
+              onChange={(e) => setConfig({ llmReasoningEffort: e.target.value })}
+            >
+              <option value="">自动（推荐）{autoEffort ? `：${autoEffort}` : ''}</option>
+              {efforts.map((effort) => (
+                <option key={effort.id} value={effort.id}>
+                  {effort.name}
+                  {effort.id === effort.name ? '' : `（${effort.id}）`}
+                </option>
+              ))}
+              {cfg.llmReasoningEffort && !efforts.some((x) => x.id === cfg.llmReasoningEffort) && (
+                <option value={cfg.llmReasoningEffort}>
+                  {cfg.llmReasoningEffort}（该模型不支持）
+                </option>
+              )}
+            </select>
+            <p style={hintStyle}>
+              {efforts.length > 0
+                ? `可选档位由模型自己声明（${efforts.map((x) => x.id).join(' / ')}）。选「自动」时优先用模型默认档，没有则用最轻一档。`
+                : '该模型未声明思考强度档位。选「自动」时不会向接口指定强度，交给它自己的默认行为 —— 指定的档位若不受支持，请求会被直接拒绝。'}
             </p>
           </div>
 

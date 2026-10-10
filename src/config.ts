@@ -53,6 +53,17 @@ export interface PluginConfig {
   llmProvider: string
   /** LLM 模式使用的模型名称（留空则用 DSH 默认模型） */
   llmModel: string
+  /**
+   * 思考强度档位（如 off / low / medium / high / max）。
+   *
+   * 必须是所选模型 `reasoning.efforts` 里的 id —— 不支持的档位宿主会在发起
+   * 请求前直接抛 `UNSUPPORTED_REASONING_EFFORT`，部分上游还会回
+   * 400「模型不支持该思考强度，请调整」。
+   *
+   * 空串 = 交给插件自动选：取模型声明的 `defaultEffort`，没有则取它支持的最轻
+   * 一档（**不会用 `off`**，因为 `off` 在不少上游的 wire 映射里是不被接受的）。
+   */
+  llmReasoningEffort: string
   /** 模型采样温度 0-1 */
   llmTemperature: number
   /** 本地规则配置 */
@@ -110,6 +121,8 @@ export const defaultConfig: PluginConfig = {
   optimizeMode: 'llm',
   llmProvider: '',
   llmModel: '',
+  // 空 = 按所选模型的能力自动挑一档；见 PluginConfig.llmReasoningEffort
+  llmReasoningEffort: '',
   llmTemperature: 0.2,
   localRules: {
     extractEntities: true,

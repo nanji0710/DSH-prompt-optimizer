@@ -163,6 +163,81 @@ check('V6-1', `验收6：${[...BIG_INPUT].length} 字输入平均 ${avgMs.toFixe
 })
 
 /* ---------------------------------------------------------------------------
+ * §六 验收标准 7（v0.3.1 新增）：短诉求不膨胀
+ *
+ * 实测病历：v0.3.0 的 `写个爬虫`（4 字）输出 80 字（20 倍）、
+ * `总结一下这份周报`（8 字）输出 69 字（8.6 倍）。用户反馈"本地还是有点多
+ * 有点冗余"，对照 LLM 侧规则（§4.1 规则 2「短诉求短输出」/ 规则 4「删掉本来
+ * 就会做的事」）收敛为：要求条数按原文长度分档 + 原文已是动词开头时不加标题。
+ * ------------------------------------------------------------------------ */
+
+const SHORT_INPUTS = [
+  ['写个爬虫', 'code'],
+  ['为什么我的接口会超时', 'qa'],
+  ['总结一下这份周报', 'doc'],
+  ['帮我写个请假条', 'general']
+]
+
+for (const [input, expectedTask] of SHORT_INPUTS) {
+  const r = opt(input)
+  const bullets = (r.text.match(/^- /gm) || []).length
+  const ratio = [...r.text].length / [...input].length
+  check(
+    `V7-1-${input.slice(0, 6)}`,
+    `验收7：${input} 短诉求不加标题且只 1 条要求`,
+    !/^(?:请排查|请完成|请撰写|请回答)/.test(r.text) && bullets <= 1,
+    { input, task: r.task, expected: expectedTask, bullets, actual: r.text }
+  )
+  check(
+    `V7-2-${input.slice(0, 6)}`,
+    `验收7：${input} 膨胀倍数 ≤ 7（实际 ${ratio.toFixed(2)}）`,
+    ratio <= 7,
+    { input, ratio: Number(ratio.toFixed(2)), actual: r.text }
+  )
+}
+
+// 要求条数分档：<30 字 1 条 / 30-80 字 2 条 / ≥80 字 3 条
+const bandMid = opt('请帮我写一个数据同步脚本，它需要支持增量同步和失败重试，另外把结果记录到日志表里')
+check(
+  'V7-3',
+  '验收7：30-80 字原文给 2 条要求',
+  (bandMid.text.match(/^- /gm) || []).length === 2,
+  { length: [...bandMid.text].length, actual: bandMid.text }
+)
+
+// 注意：以动词/「请」开头且 ≥60 字的原文会被 looksClear 判为"已清晰"直接透传
+// （验收标准 3），所以这里用「名词短语开头」的长文本来命中 3 条档。
+const LONG_INPUT =
+  '数据同步脚本：需要支持增量同步和失败重试，记录到日志表，保证幂等性，重复执行不产生脏数据，考虑任务失败后的续跑逻辑，给出监控指标建议以及异常告警阈值设置，还要考虑跨库同步的场景以及字段映射关系的维护成本'
+check('V7-4-pre', `验收7：长用例原文 ${[...LONG_INPUT].length} 字（≥80 才进 3 条档）`, [...LONG_INPUT].length >= 80, {
+  length: [...LONG_INPUT].length
+})
+const bandLong = opt(LONG_INPUT)
+check(
+  'V7-4',
+  '验收7：长原文（非动词开头）给满 3 条要求',
+  (bandLong.text.match(/^- /gm) || []).length === 3,
+  { length: [...bandLong.text].length, actual: bandLong.text }
+)
+
+// ★ 对账三要素是交付物本身，不受分档影响（否则 V4 的三条会随原文变短而丢失）
+const shortReconcile = opt('结果表和底表有差异，你查一下')
+check(
+  'V7-5',
+  '验收7：对账类即使原文很短也保留三要素',
+  /取数口径/.test(shortReconcile.text) && /SQL|检查方法/.test(shortReconcile.text) && /修正建议/.test(shortReconcile.text),
+  { length: [...shortReconcile.text].length, actual: shortReconcile.text }
+)
+
+// 原文已以动词开头时不加标题（标题只是重复原文的动宾结构）
+check(
+  'V7-6',
+  '验收7：原文以动词开头时不加场景标题',
+  !/^(?:请完成以下开发任务|请撰写以下内容|请回答：)/.test(opt('帮我写一个数据同步脚本，要支持增量同步和失败重试，并且记录日志').text),
+  { actual: opt('帮我写一个数据同步脚本，要支持增量同步和失败重试，并且记录日志').text }
+)
+
+/* ---------------------------------------------------------------------------
  * 质量不变量：I1 幂等 / I2 非空 / 场景路由正确
  * ------------------------------------------------------------------------ */
 

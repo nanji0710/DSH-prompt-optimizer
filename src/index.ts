@@ -26,8 +26,12 @@ import {
   stripDecoration
 } from './prompt'
 import {
+  MODELS_ENDPOINT,
   OPTIMIZE_ENDPOINT,
   PROVIDERS_ENDPOINT,
+  type ModelInfo,
+  type ModelReasoningInfo,
+  type ModelsRequestBody,
   type OptimizeRequestBody
 } from './protocol'
 
@@ -40,18 +44,35 @@ export const inject = ['llm']
 export interface RequestSettings {
   provider?: string
   model?: string
+  /**
+   * 思考强度档位。
+   *
+   * ⚠️ 必须落在该模型 `reasoning.efforts` 里：宿主的 `resolveCallWithInfo` 在发起
+   * provider I/O 之前就会校验，不支持的档位直接抛 UNSUPPORTED_REASONING_EFFORT；
+   * 部分上游（如 workbuddy）还会回 400「模型不支持该思考强度，请调整」。
+   * 留空表示由插件按模型能力自动挑一档。
+   */
+  reasoningEffort?: string
   temperature?: number
   rolePrompt?: string
   localRules?: Partial<LocalRulesConfig>
+  /** 本次请求的优化模式；以前没上传，导致设置页选「本地规则」也照样调模型。 */
+  mode?: 'local' | 'llm'
 }
 
 /** 把「客户端设置」合并成一份完整配置，缺字段用内置默认值补齐。 */
 function mergeSettings(settings?: RequestSettings): PluginConfig {
   const temperature = Number(settings?.temperature)
+  const mode = settings?.mode === 'local' || settings?.mode === 'llm' ? settings.mode : undefined
   return {
     ...defaultConfig,
+    optimizeMode: mode ?? defaultConfig.optimizeMode,
     llmProvider: settings?.provider ?? defaultConfig.llmProvider,
     llmModel: settings?.model ?? defaultConfig.llmModel,
+    llmReasoningEffort:
+      typeof settings?.reasoningEffort === 'string'
+        ? settings.reasoningEffort
+        : defaultConfig.llmReasoningEffort,
     llmTemperature: Number.isFinite(temperature) ? temperature : defaultConfig.llmTemperature,
     localRules: { ...defaultConfig.localRules, ...(settings?.localRules || {}) }
   }
@@ -100,6 +121,88 @@ export function apply(ctx: any) {
   }
 
   /**
+   * 列出某个 provider 支持的模型，并附带每个模型的思考强度档位。
+   *
+   * 档位只能从 `resolveModelInfo` 得到（`listModels` 返回的条目**不含** reasoning
+   * 元数据），而设置页的「思考强度」下拉必须严格来自这里：手填一个模型不支持的
+   * 档位，宿主的 `resolveCallWithInfo` 会在 provider I/O 之前就抛
+   * UNSUPPORTED_REASONING_EFFORT，workbuddy 这类上游还会直接回 400
+   * 「模型不支持该思考强度，请调整」。
+   */
+  const listModels = async (provider: string, signal?: AbortSignal): Promise<ModelInfo[]> => {
+    const llm = ctx.get?.('llm') ?? ctx.llm
+    const raw: any[] = (await llm?.listModels?.(provider)) ?? []
+    const models: ModelInfo[] = []
+    // 逐个补齐能力元数据；限制并发，避免 provider 有上百个模型时打爆上游。
+    const CONCURRENCY = 6
+    for (let i = 0; i < raw.length; i += CONCURRENCY) {
+      const slice = raw.slice(i, i + CONCURRENCY)
+      const resolved = await Promise.all(
+        slice.map(async (item): Promise<ModelInfo | null> => {
+          const id = String(item?.id ?? '')
+          if (!id) return null
+          const info: ModelInfo = { id, name: String(item?.name ?? id) }
+          if (item?.description) info.description = String(item.description)
+          try {
+            const detail = await llm?.resolveModelInfo?.(provider, id, signal)
+            if (detail?.reasoning) info.reasoning = detail.reasoning as ModelReasoningInfo
+          } catch {
+            // 单个模型的元数据读取失败不影响整张列表（该项就没有强度下拉）
+          }
+          return info
+        })
+      )
+      for (const info of resolved) if (info) models.push(info)
+    }
+    return models
+  }
+
+  /**
+   * 解析本次请求实际要用的思考强度档位。
+   *
+   * 以 `resolveModelInfo` 的元数据为准做校验：
+   * - 用户选的档位在 `efforts` 里 → 原样使用；
+   * - 不在 → 记一条 warn 并退回自动档（绝不把不支持的档位传给宿主）；
+   * - 读不到元数据 → 本次**不传** `reasoningEffort`，让 provider 用自己的默认档
+   *   （不传永远安全：宿主的档位校验只在显式传值时才触发）。
+   */
+  const resolveReasoningEffort = async (
+    llm: any,
+    provider: string,
+    model: string,
+    config: PluginConfig,
+    signal?: AbortSignal
+  ): Promise<{ effort?: string; warning?: string }> => {
+    let info: ModelReasoningInfo | undefined
+    try {
+      const detail = await llm?.resolveModelInfo?.(provider, model, signal)
+      info = detail?.reasoning as ModelReasoningInfo | undefined
+    } catch (error) {
+      return {
+        warning: `无法读取模型 "${model}" 的能力元数据（${
+          error instanceof Error ? error.message : String(error)
+        }），本次不指定思考强度`
+      }
+    }
+
+    const efforts = info?.efforts ?? []
+    const wanted = (config.llmReasoningEffort || '').trim()
+    if (wanted) {
+      if (efforts.some((e) => e.id === wanted)) return { effort: wanted }
+      return {
+        warning: `模型 "${model}" 不支持思考强度 "${wanted}"，已改用自动档（可选：${
+          efforts.map((e) => e.id).join(' / ') || '无'
+        }）`
+      }
+    }
+
+    // 自动档：优先模型声明的默认档，否则取它支持的最轻一档。
+    // `off` 放在最后考虑 —— 它在不少上游的 wire 映射里不被接受。
+    const auto = info?.defaultEffort ?? efforts.find((e) => e.id !== 'off')?.id
+    return { effort: auto }
+  }
+
+  /**
    * LLM 深度优化：调用 DSH 已接入的模型改写提示词。
    * 失败时抛错，由调用方决定是否降级到本地规则。
    */
@@ -137,6 +240,13 @@ export function apply(ctx: any) {
     const temperature = Number(config.llmTemperature)
     if (Number.isFinite(temperature)) options.temperature = temperature
     if (signal) options.signal = signal
+
+    // 思考强度：必须落在模型声明的档位里，否则宿主在 provider I/O 之前就拒绝
+    // （UNSUPPORTED_REASONING_EFFORT），部分上游还会回 400「模型不支持该思考强度」。
+    // 校验失败时退回自动档，读不到元数据时这一次干脆不传（不传永远安全）。
+    const effort = await resolveReasoningEffort(llm, provider, model, config, signal)
+    if (effort.warning) ctx.logger?.warn?.(`prompt-optimizer: ${effort.warning}`)
+    if (effort.effort) options.reasoningEffort = effort.effort
 
     // 分片累加：text-delta 携带正文增量，finish 结束流。
     // ⚠️ finish 分片把终止结果放在 **reason** 下（`{ type:'finish', reason:{ kind, failure } }`），
@@ -357,8 +467,41 @@ export function apply(ctx: any) {
       }
     })
 
+    /** POST /api/prompt-optimizer/models：{ provider } → { ok, models }。 */
+    connection.fetch.register({
+      path: MODELS_ENDPOINT,
+      methods: ['POST'],
+      requestBody: 'buffered',
+      fetch: async (request: Request): Promise<Response> => {
+        let body: ModelsRequestBody
+        try {
+          body = (await request.json()) as ModelsRequestBody
+        } catch {
+          body = {}
+        }
+        const provider = typeof body?.provider === 'string' ? body.provider.trim() : ''
+        if (!provider) {
+          const selection = ctx.get?.('agentDefaultModel')?.currentSelection?.()
+          const fallback = selection?.provider ?? (ctx.llm?.listProviders?.() ?? [])[0]?.id ?? ''
+          if (!fallback) return json({ ok: true, provider: '', models: [] })
+          try {
+            return json({ ok: true, provider: fallback, models: await listModels(fallback, request.signal) })
+          } catch (error) {
+            const hint = error instanceof Error ? error.message : String(error)
+            return json({ ok: false, provider: fallback, error: hint }, 200)
+          }
+        }
+        try {
+          return json({ ok: true, provider, models: await listModels(provider, request.signal) })
+        } catch (error) {
+          const hint = error instanceof Error ? error.message : String(error)
+          return json({ ok: false, provider, error: hint }, 200)
+        }
+      }
+    })
+
     ctx.logger?.info?.(
-      `prompt-optimizer: HTTP 端点已注册 ${OPTIMIZE_ENDPOINT} / ${PROVIDERS_ENDPOINT}`
+      `prompt-optimizer: HTTP 端点已注册 ${OPTIMIZE_ENDPOINT} / ${PROVIDERS_ENDPOINT} / ${MODELS_ENDPOINT}`
     )
   })
 }

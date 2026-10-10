@@ -13,8 +13,13 @@
  *
  * 三条硬约束（对应规格 §二、§六）：
  * 1. **零占位符**：绝不输出 `[待补充]` / `TODO` / `xxx` / `<…>`；缺失的信息宁可不写。
- * 2. **篇幅克制**：输出 ≤ 原文 × 3（短输入另有 120 字下限，见 `budgetOf`）。
- * 3. **动作导向**：以「请 + 动词」开头，不写「我是谁」。
+ * 2. **篇幅克制**：要求条数按原文长度分档（1/2/3 条，见 `requirementLimit`），
+ *    输出 ≤ 原文 × 3（对账类另有 300 字下限，见 `budgetOf`）。
+ * 3. **不给标签**：不写「角色：」「## 任务目标」这类前缀，只保留用户自己的动宾结构。
+ *
+ * ★ v0.3.1 瘦身：v0.3.0 的实测问题是短诉求被固定要求撑爆——`写个爬虫`（4 字）
+ * 输出 80 字（20 倍）、`总结一下这份周报`（8 字）输出 69 字（8.6 倍）。对照 LLM
+ * 侧规则（规格 §4.1 规则 2「短诉求短输出」/ 规则 4「删掉本来就会做的事」）收敛。
  */
 
 import type { LocalRulesConfig, RoleItem } from './config'
@@ -50,6 +55,22 @@ const MIN_LENGTH = 3
  * 即 300 是 100 字以内输入的实际上限，故取 `max(原文 × 3, 300)`。
  */
 const MIN_BUDGET = 300
+
+/** 要求条数的长度分档：短诉求不该被三条固定要求撑爆。
+ *
+ * 规格 §4.1 规则 2 明写「短诉求短输出，不要因为模板有五个小节就全都填满」。
+ * 实测 `写个爬虫`（4 字）加三条要求后是 80 字（20 倍），用户直接反馈"有点多
+ * 有点冗余"，故按原文长度决定给几条：
+ *   - < 30 字：1 条（只补最关键的一句）
+ *   - < 80 字：2 条
+ *   - ≥ 80 字：3 条（信息足够，值得完整规格）
+ */
+function requirementLimit(original: string): number {
+  const length = [...original].length
+  if (length < 30) return 1
+  if (length < 80) return 2
+  return 3
+}
 
 // ---------------------------------------------------------------------------
 // Step 1-B 实体抽取词表
@@ -317,6 +338,24 @@ const QA_REQUIREMENTS = [
   '不确定的地方直接说"不确定"，不要编造'
 ]
 
+/** 场景标题只在原文既短又不像指令时才加。
+ *
+ * 短诉求本身就是一句完整指令（`写个爬虫`、`总结一下这份周报`），前面再挂
+ * 「请帮我处理以下开发任务：」只是 11 个字符的噪声，且违反规格 §4.1 规则 3
+ * 「以动词开头」——原文已经以动词开头了。因此只要原文已经以动词/「请」开头，
+ * 或长度已够（信息完整），都直接省掉标题。
+ */
+const TITLE_MIN_LENGTH = 30
+
+function needsTitle(core: string): boolean {
+  return [...core].length >= TITLE_MIN_LENGTH && !VERB_HEAD.test(core)
+}
+
+/** 要求条数：按原文长度取前 N 条。 */
+function takeRequirements(requirements: string[], original: string): string[] {
+  return requirements.slice(0, requirementLimit(original))
+}
+
 /** 把抽取到的约束渲染成额外的要求条目（只写原文里真实存在的）。 */
 function constraintBullets(draft: Draft): string[] {
   const bullets: string[] = []
@@ -327,7 +366,7 @@ function constraintBullets(draft: Draft): string[] {
 }
 
 function render(title: string, body: string, requirements: string[]): string {
-  const parts = [`${title}\n\n${body}`]
+  const parts = [title ? `${title}\n\n${body}` : body]
   if (requirements.length > 0) {
     parts.push(['要求：', ...requirements.map((item) => `- ${item}`)].join('\n'))
   }
@@ -339,6 +378,7 @@ function compose(draft: Draft, _config: LocalRulesConfig): { text: string; templ
   const extra = constraintBullets(draft)
   const entities = associateMetrics(draft.core, draft.platform, draft.metric)
   const target = draft.table.join('、') || '相关数据表'
+  const titled = needsTitle(draft.core)
 
   switch (draft.task) {
     case 'reconcile': {
@@ -348,6 +388,10 @@ function compose(draft: Draft, _config: LocalRulesConfig): { text: string; templ
       if (draft.anomaly) bodyLines.push(`已知现象：${draft.anomaly}`)
       return {
         template: 'T1',
+        // ★ 对账三要素是**交付物本身**（规格 §六 验收标准 4 硬性要求：定位环节 +
+        // 验证方法 + 修正建议），不是凑数的装饰，故不参与条数分档。
+        // 标题也不省：对账输出是「标题 + 字段」的表单结构，正文全是字段名，
+        // 去掉标题会变成以「对比对象：」开头的残片。
         text: render(
           '请排查以下数据差异并定位原因：',
           bodyLines.join('\n'),
@@ -358,17 +402,29 @@ function compose(draft: Draft, _config: LocalRulesConfig): { text: string; templ
     case 'code':
       return {
         template: 'T2',
-        text: render('请帮我处理以下开发任务：', draft.core, [...CODE_REQUIREMENTS, ...extra])
+        text: render(
+          titled ? '请完成以下开发任务：' : '',
+          draft.core,
+          [...takeRequirements(CODE_REQUIREMENTS, draft.core), ...extra]
+        )
       }
     case 'doc':
       return {
         template: 'T3',
-        text: render('请帮我写：', draft.core, [...DOC_REQUIREMENTS, ...extra])
+        text: render(
+          titled ? '请撰写以下内容：' : '',
+          draft.core,
+          [...takeRequirements(DOC_REQUIREMENTS, draft.core), ...extra]
+        )
       }
     case 'qa':
       return {
         template: 'T4',
-        text: render('请回答以下问题：', draft.core, [...QA_REQUIREMENTS, ...extra])
+        text: render(
+          titled ? '请回答：' : '',
+          draft.core,
+          [...takeRequirements(QA_REQUIREMENTS, draft.core), ...extra]
+        )
       }
     default:
       return {
@@ -386,7 +442,7 @@ function compose(draft: Draft, _config: LocalRulesConfig): { text: string; templ
  * 输出篇幅上限。
  *
  * 严格按「原文 × 3」会让任何模板对超短输入都超标（"写个排序" 4 字 → 上限
- * 12 字，连一句要求都放不下），因此取 `max(原文 × 3, 120)`。
+ * 12 字，连一句要求都放不下），因此取 `max(原文 × 3, 300)`。
  * 规格 §六 验收标准 2 也只要求「100 字以内的原文 → 输出不超过 300 字」。
  */
 function budgetOf(original: string): number {
@@ -406,7 +462,6 @@ function fitBudget(draft: Draft, config: LocalRulesConfig): { text: string; temp
   // 最后兜底：只保留"核心诉求 + 一行要求"，等价于模板 5
   return { template: 'T5', text: `${draft.core}\n\n要求：直接回答，不要反问，缺失信息按常识处理。` }
 }
-
 // ---------------------------------------------------------------------------
 // 角色注入（默认不注入；注入时只占 1 行）
 // ---------------------------------------------------------------------------
