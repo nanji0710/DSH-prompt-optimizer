@@ -10,7 +10,7 @@
  * 优化有两条路径：LLM 真改写（走 Node 半边 RPC）优先；宿主不支持或调用失败时
  * 落回本地规则引擎，保证按钮永远给得出结果。
  */
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { optimizePrompt, resolveRole } from './optimize'
 import {
   OptimizeError,
@@ -64,8 +64,45 @@ function OptimizeButtonInner({ useInput, setDraft }: InnerProps) {
   const [hint, setHint] = useState('')
   const [busy, setBusy] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
+  /** 上一次由本按钮写进输入框的文本，用来判断草稿后来是否已被消费掉。 */
+  const appliedRef = useRef<string | null>(null)
+  /** `appliedRef.current` 是否已经真的出现在 draft 里（setDraft 是异步生效的）。 */
+  const seenRef = useRef(false)
 
   const wantsLlm = () => getConfig().optimizeMode === 'llm' && isBridgeReady()
+
+  /** 把优化结果写回输入框，同时记下「这份结果是从哪来的」。 */
+  const applyResult = (origin: string, next: string, message: string) => {
+    appliedRef.current = next
+    seenRef.current = false
+    setPrevious(origin)
+    setDraft(next)
+    setHint(message)
+  }
+
+  // 消息发出去之后输入框会被清空，但 previous / hint 是组件本地状态，不会被清。
+  // 于是「已优化（LLM 改写）」一直挂着，点 ↩ 还会把发送过的旧内容倒回输入框。
+  // 草稿一旦空了、或已被用户改写成别的文本，撤销与提示就都不再成立，就地复位。
+  useEffect(() => {
+    if (draft === '') {
+      appliedRef.current = null
+      seenRef.current = false
+      setPrevious(null)
+      setHint('')
+      return
+    }
+    if (appliedRef.current === null) return
+    if (draft === appliedRef.current) {
+      seenRef.current = true
+      return
+    }
+    // setDraft 还没反映到 draft 上时不动，避免把自己的写入误判成用户改写。
+    if (!seenRef.current) return
+    appliedRef.current = null
+    seenRef.current = false
+    setPrevious(null)
+    setHint('')
+  }, [draft])
 
   const run = async () => {
     if (busy) return
@@ -82,9 +119,7 @@ function OptimizeButtonInner({ useInput, setDraft }: InnerProps) {
         setHint('已符合规则')
         return
       }
-      setPrevious(draft)
-      setDraft(next)
-      setHint('已优化（本地规则）')
+      applyResult(draft, next, '已优化（本地规则）')
       return
     }
 
@@ -102,9 +137,7 @@ function OptimizeButtonInner({ useInput, setDraft }: InnerProps) {
         setHint('模型认为已足够清晰')
         return
       }
-      setPrevious(draft)
-      setDraft(optimized)
-      setHint('已优化（LLM 改写）')
+      applyResult(draft, optimized, '已优化（LLM 改写）')
     } catch (error) {
       if (controller.signal.aborted) {
         setHint('已取消')
@@ -114,9 +147,7 @@ function OptimizeButtonInner({ useInput, setDraft }: InnerProps) {
       const fallback =
         error instanceof OptimizeError && error.fallback ? error.fallback : optimizePrompt(text)
       const reason = error instanceof Error ? error.message : String(error)
-      setPrevious(draft)
-      setDraft(fallback)
-      setHint(`LLM 失败，已降级为本地规则：${reason}`)
+      applyResult(draft, fallback, `LLM 失败，已降级为本地规则：${reason}`)
     } finally {
       abortRef.current = null
       setBusy(false)
@@ -125,6 +156,9 @@ function OptimizeButtonInner({ useInput, setDraft }: InnerProps) {
 
   const undo = () => {
     if (previous === null) return
+    // 先撤掉「本次结果已写入」的记录，否则下面的 effect 会把刚设置的提示又清掉。
+    appliedRef.current = null
+    seenRef.current = false
     setDraft(previous)
     setPrevious(null)
     setHint('已撤销')
