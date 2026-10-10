@@ -1,6 +1,6 @@
 {
   "name": "prompt-optimizer",
-  "version": "0.3.3",
+  "version": "0.3.4",
   "description": "DSH 涓€閿彁绀鸿瘝浼樺寲鎻掍欢锛屾敮鎸佹湰鍦拌鍒欓浂鎴愭湰浼樺寲涓庤鑹插寲 LLM 娣卞害浼樺寲",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -57,12 +57,24 @@
     "react": ">=17.0.0"
   },
   "peerDependenciesMeta": {
-    "@deepseek-ai/dsh-client-ui-slots": { "optional": true },
-    "@deepseek-ai/dsh-client-ui-conversation": { "optional": true },
-    "@deepseek-ai/dsh-client-ui-settings": { "optional": true },
-    "@deepseek-ai/dsh-llm": { "optional": true },
-    "cordis": { "optional": true },
-    "react": { "optional": true }
+    "@deepseek-ai/dsh-client-ui-slots": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-conversation": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-client-ui-settings": {
+      "optional": true
+    },
+    "@deepseek-ai/dsh-llm": {
+      "optional": true
+    },
+    "cordis": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@types/react": "^18.3.0",

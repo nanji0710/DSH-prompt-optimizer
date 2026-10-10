@@ -50,7 +50,10 @@ jobs:
         run: |
           mkdir -p release
           # npm tarball（DSH 支持 dsh plugin add ./xxx.tgz）
+          # npm pack 默认用 package.json 的版本号（不带 v），这里统一成 tag 名，
+          # 保证附件名与 Release 正文里的安装命令逐字一致。
           npm pack --pack-destination release
+          mv release/prompt-optimizer-*.tgz "release/prompt-optimizer-${{ github.ref_name }}.tgz"
           # 手动解压安装包（zip，含 dist 与 bundle 声明）
           zip -r "release/prompt-optimizer-${{ github.ref_name }}.zip" \
             dist cordis.patch.yml cordis.yml icon.svg \
@@ -65,16 +68,35 @@ jobs:
           name: ${{ github.ref_name }}
           generate_release_notes: true
           body: |
-            ## DSH 提示词优化助手 ${{ github.ref_name }}
+            ## ✨ DSH 提示词优化助手 ${{ github.ref_name }}
 
-            兼容 DSH 桌面端 v0.2.0-rc.2。安装方式：
+            装好后，在 DSH 输入框里打完字，点一下 **✨** 按钮，就能把随手写的一句话
+            补全成 AI 听得懂的完整需求。点 **↩** 可一键还原。
+
+            **兼容 DSH 桌面端 `v0.2.0-rc.2`**（不兼容 `v0.1.x`）。
+
+            ### 安装（任选一种）
 
             ```bash
-            # 方式一：tarball
+            # 方式一：下载下面的 .tgz 附件后安装
             dsh plugin add ./prompt-optimizer-${{ github.ref_name }}.tgz
-
-            # 方式二：解压 zip 后指向目录
-            dsh plugin add ./解压后的目录路径
             ```
+
+            ```bash
+            # 方式二：直接从 GitHub 安装最新代码
+            dsh plugin add https://github.com/nanji0710/DSH-prompt-optimizer
+            ```
+
+            > 装完请**重启一次 DSH**，然后打开 `设置 → ✨ 提示词优化助手` 确认已生效。
+            > 默认配置即推荐配置，不需要额外申请 API 或填写密钥。
+
+            ### 附件说明
+
+            | 文件 | 用途 |
+            | --- | --- |
+            | `prompt-optimizer-${{ github.ref_name }}.tgz` | 打包安装包，用 `dsh plugin add` 直接安装 |
+            | `prompt-optimizer-${{ github.ref_name }}.zip` | 解压后得到完整目录，可从本地目录安装或自行查阅源码 |
+
+            使用说明、效果示例与常见问题见 [README](https://github.com/nanji0710/DSH-prompt-optimizer#readme)。
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
