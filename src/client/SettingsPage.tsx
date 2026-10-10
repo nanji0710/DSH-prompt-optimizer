@@ -1,21 +1,408 @@
 /**
- * 设置页面：暂为静态说明（客户端 v0.1.2 只依赖 react，配置读写后续版本接入）。
+ * 设置面板页面（注册在 `settings.section`，kind: list / scope: root）。
+ *
+ * 全部配置写在浏览器侧 localStorage，与输入框按钮共用同一份状态。
+ * 仅使用主题 token（--dsw-alias-*）着色，不引入任何 Harness Client 包。
+ *
+ * 「AI 接口」一节通过 connection RPC 读取宿主已注册的 provider 列表作为下拉
+ * 候选；读取失败时退化为纯手填输入框，不影响保存。
  */
-export function SettingsPage() {
+import { useEffect, useState } from 'react'
+import { PRESET_ROLES } from '../config'
+import type { RoleItem } from '../config'
+import { useConfig, setConfig, resetConfig } from './store'
+import { isBridgeReady, requestProviders, type ProviderInfo } from './bridge'
+
+type RuleKey =
+  | 'cleanWhitespace'
+  | 'filterPoliteWords'
+  | 'normalizeList'
+  | 'autoSplitParagraph'
+  | 'splitSections'
+  | 'appendConstraints'
+  | 'enableRoleOptimization'
+
+const RULE_LABELS: Array<[RuleKey, string]> = [
+  ['cleanWhitespace', '清洗空白与空行'],
+  ['filterPoliteWords', '剔除客套话（麻烦/帮我/谢谢…）'],
+  ['normalizeList', '规范列表编号与符号'],
+  ['autoSplitParagraph', '按句号/分号自动分段'],
+  ['splitSections', '按关键词抽取小节标题'],
+  ['appendConstraints', '追加约束条款'],
+  ['enableRoleOptimization', '启用角色化前缀'],
+]
+
+const labelStyle: Record<string, string | number> = {
+  fontSize: 13,
+  fontWeight: 600,
+  color: 'var(--dsw-alias-label-primary, inherit)',
+  display: 'block',
+  marginBottom: 6,
+}
+
+const rowStyle: Record<string, string | number> = {
+  display: 'flex',
+  alignItems: 'center',
+  gap: 8,
+  padding: '6px 0',
+  fontSize: 13,
+  color: 'var(--dsw-alias-label-secondary, inherit)',
+}
+
+const inputStyle: Record<string, string | number> = {
+  width: '100%',
+  boxSizing: 'border-box',
+  padding: '6px 8px',
+  fontSize: 13,
+  color: 'var(--dsw-alias-label-primary, inherit)',
+  background: 'var(--dsw-alias-bg-base, transparent)',
+  border: '1px solid var(--dsw-alias-border-l2, currentColor)',
+  borderRadius: 'var(--dsw-radius-sm, 4px)',
+}
+
+const fieldStyle: Record<string, string | number> = { marginBottom: 18 }
+const dividerStyle: Record<string, string | number> = {
+  height: 1,
+  background: 'var(--dsw-alias-border-l2, currentColor)',
+  opacity: 0.4,
+  margin: '18px 0',
+}
+const hintStyle: Record<string, string | number> = {
+  margin: '6px 0 0',
+  fontSize: 12,
+  color: 'var(--dsw-alias-label-tertiary, inherit)',
+}
+const sectionTitleStyle: Record<string, string | number> = {
+  margin: '0 0 12px',
+  fontSize: 14,
+  fontWeight: 600,
+  color: 'var(--dsw-alias-label-primary, inherit)',
+}
+
+const buttonStyle: Record<string, string | number> = {
+  ...inputStyle,
+  width: 'auto',
+  cursor: 'pointer',
+}
+
+/** 「AI 接口」一节：模式、provider、模型、温度。 */
+function ApiSection() {
+  const cfg = useConfig()
+  const [providers, setProviders] = useState<ProviderInfo[]>([])
+  const [defaultSelection, setDefaultSelection] = useState<{ provider?: string; model?: string } | null>(
+    null,
+  )
+  const bridgeReady = isBridgeReady()
+
+  useEffect(() => {
+    if (!bridgeReady) return
+    let alive = true
+    void requestProviders().then((result) => {
+      if (!alive) return
+      setProviders(result.providers)
+      setDefaultSelection(result.default)
+    })
+    return () => {
+      alive = false
+    }
+  }, [bridgeReady])
+
+  const usingLlm = cfg.optimizeMode === 'llm'
+  const effectiveProvider = cfg.llmProvider.trim() || defaultSelection?.provider || ''
+  const effectiveModel = cfg.llmModel.trim() || defaultSelection?.model || ''
+
   return (
-    <div style={{ fontFamily: 'system-ui, sans-serif', padding: 16, color: '#333' }}>
-      <h3 style={{ marginTop: 0 }}>✨ 提示词优化助手</h3>
-      <p>
-        输入框左侧的 <b>✨</b> 按钮一键优化提示词。
+    <div style={fieldStyle}>
+      <h4 style={sectionTitleStyle}>AI 接口</h4>
+
+      <label style={labelStyle}>优化模式</label>
+      <select
+        style={inputStyle}
+        value={cfg.optimizeMode}
+        onChange={(e) => setConfig({ optimizeMode: e.target.value as 'local' | 'llm' })}
+      >
+        <option value="llm">大模型深度改写（推荐）</option>
+        <option value="local">本地规则（不调用模型，零成本）</option>
+      </select>
+      <p style={hintStyle}>
+        大模型改写会调用 DSH 已接入的模型接口；调用失败时自动降级为本地规则，不会中断操作。
       </p>
-      <ul>
-        <li>本地规则引擎：零成本，自动去客套、结构化、补边界。</li>
-        <li>角色化优化：前端、后端、产品、数据分析等 6 个内置角色。</li>
-        <li>LLM 深度优化（需在服务端配置模型）：调用已接入的模型做精细润色。</li>
-      </ul>
-      <p style={{ color: '#888', fontSize: 13 }}>
-        配置项（角色选择、优化模式）将在后续版本开放到设置面板。
-      </p>
+
+      {usingLlm && (
+        <>
+          <div style={{ marginTop: 16 }}>
+            <label style={labelStyle}>接口 / Provider</label>
+            <input
+              style={inputStyle}
+              list="prompt-optimizer-providers"
+              value={cfg.llmProvider}
+              placeholder={effectiveProvider || '留空则使用 DSH 当前默认模型'}
+              onChange={(e) => setConfig({ llmProvider: e.target.value })}
+            />
+            <datalist id="prompt-optimizer-providers">
+              {providers.map((provider) => (
+                <option key={provider.id} value={provider.id}>
+                  {provider.name}
+                </option>
+              ))}
+            </datalist>
+            <p style={hintStyle}>
+              {bridgeReady
+                ? `宿主已注册 ${providers.length} 个接口，可直接选择或手填。留空时使用 DSH 默认：${effectiveProvider || '（未知）'}`
+                : '当前宿主没有可用的 connection 服务，将只能使用本地规则。'}
+            </p>
+          </div>
+
+          <div style={{ marginTop: 16 }}>
+            <label style={labelStyle}>模型名称</label>
+            <input
+              style={inputStyle}
+              value={cfg.llmModel}
+              placeholder={effectiveModel || '留空则使用 DSH 当前默认模型'}
+              onChange={(e) => setConfig({ llmModel: e.target.value })}
+            />
+            <p style={hintStyle}>
+              当前生效：<code>{effectiveModel || '（未解析到模型，请填写或先配置 DSH 默认模型）'}</code>
+            </p>
+          </div>
+
+          <div style={{ marginTop: 16 }}>
+            <label style={labelStyle}>采样温度：{cfg.llmTemperature}</label>
+            <input
+              type="range"
+              min={0}
+              max={1}
+              step={0.05}
+              value={cfg.llmTemperature}
+              style={{ width: '100%' }}
+              onChange={(e) => setConfig({ llmTemperature: Number(e.target.value) })}
+            />
+            <p style={hintStyle}>改写任务建议 0.1–0.3：越低越忠实于原文，越高越发散。</p>
+          </div>
+        </>
+      )}
     </div>
   )
 }
+
+/** 「自定义角色」一节：可新增、可编辑、可删除。 */
+function RolesSection() {
+  const cfg = useConfig()
+  const rules = cfg.localRules
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [draftRole, setDraftRole] = useState<RoleItem | null>(null)
+
+  const startAdd = () => {
+    const id = `custom-${Date.now().toString(36)}`
+    setEditingId(id)
+    setDraftRole({ id, name: '', description: '', rolePrompt: '' })
+  }
+
+  const startEdit = (role: RoleItem) => {
+    setEditingId(role.id)
+    setDraftRole({ ...role })
+  }
+
+  const cancel = () => {
+    setEditingId(null)
+    setDraftRole(null)
+  }
+
+  const save = () => {
+    if (!draftRole) return
+    const name = draftRole.name.trim()
+    if (!name) return
+    const next: RoleItem = {
+      ...draftRole,
+      name,
+      description: draftRole.description.trim(),
+      rolePrompt: draftRole.rolePrompt.trim(),
+    }
+    const exists = rules.customRoles.some((role) => role.id === next.id)
+    const customRoles = exists
+      ? rules.customRoles.map((role) => (role.id === next.id ? next : role))
+      : [...rules.customRoles, next]
+    setConfig({ localRules: { ...rules, customRoles } })
+    cancel()
+  }
+
+  const remove = (id: string) => {
+    setConfig({
+      localRules: {
+        ...rules,
+        customRoles: rules.customRoles.filter((role) => role.id !== id),
+        // 删掉的正好是当前选中角色时，回落到通用角色
+        currentRoleId: rules.currentRoleId === id ? 'general' : rules.currentRoleId,
+      },
+    })
+    if (editingId === id) cancel()
+  }
+
+  return (
+    <div style={fieldStyle}>
+      <h4 style={sectionTitleStyle}>自定义角色</h4>
+      <p style={{ ...hintStyle, marginTop: 0 }}>
+        自定义角色用来给改写补充专业视角（如「资深 iOS 工程师」）。可在上方「优化角色」里选中，并开启「启用角色化前缀」后生效。
+      </p>
+
+      {rules.customRoles.length === 0 && !draftRole && (
+        <p style={{ ...hintStyle }}>暂无自定义角色（内置 {PRESET_ROLES.length} 个）。</p>
+      )}
+
+      {rules.customRoles.map((role) => (
+        <div key={role.id} style={{ ...rowStyle, alignItems: 'flex-start' }}>
+          <span style={{ flex: 1 }}>
+            <strong style={{ color: 'var(--dsw-alias-label-primary, inherit)' }}>{role.name}</strong>
+            {role.description !== '' && (
+              <span style={{ display: 'block', fontSize: 12, opacity: 0.75 }}>{role.description}</span>
+            )}
+          </span>
+          <button type="button" style={buttonStyle} onClick={() => startEdit(role)}>
+            编辑
+          </button>
+          <button type="button" style={buttonStyle} onClick={() => remove(role.id)}>
+            删除
+          </button>
+        </div>
+      ))}
+
+      {draftRole ? (
+        <div
+          style={{
+            marginTop: 12,
+            padding: 12,
+            border: '1px solid var(--dsw-alias-border-l2, currentColor)',
+            borderRadius: 'var(--dsw-radius-sm, 4px)',
+          }}
+        >
+          <label style={labelStyle}>角色名称</label>
+          <input
+            style={inputStyle}
+            value={draftRole.name}
+            placeholder="例如：资深 iOS 工程师"
+            onChange={(e) => setDraftRole({ ...draftRole, name: e.target.value })}
+          />
+
+          <label style={{ ...labelStyle, marginTop: 12 }}>角色描述</label>
+          <input
+            style={inputStyle}
+            value={draftRole.description}
+            placeholder="例如：侧重 SwiftUI、性能与内存"
+            onChange={(e) => setDraftRole({ ...draftRole, description: e.target.value })}
+          />
+
+          <label style={{ ...labelStyle, marginTop: 12 }}>角色提示词</label>
+          <textarea
+            style={{ ...inputStyle, minHeight: 80, resize: 'vertical' }}
+            value={draftRole.rolePrompt}
+            placeholder="例如：你是资深 iOS 工程师，熟悉 SwiftUI、内存管理与 App Store 审核规范。改写时请补充平台约束、性能指标与验收标准。"
+            onChange={(e) => setDraftRole({ ...draftRole, rolePrompt: e.target.value })}
+          />
+
+          <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
+            <button
+              type="button"
+              style={{ ...buttonStyle, opacity: draftRole.name.trim() === '' ? 0.5 : 1 }}
+              disabled={draftRole.name.trim() === ''}
+              onClick={save}
+            >
+              保存角色
+            </button>
+            <button type="button" style={buttonStyle} onClick={cancel}>
+              取消
+            </button>
+          </div>
+        </div>
+      ) : (
+        <button type="button" style={{ ...buttonStyle, marginTop: 12 }} onClick={startAdd}>
+          ＋ 添加自定义角色
+        </button>
+      )}
+    </div>
+  )
+}
+
+export function SettingsPage() {
+  const cfg = useConfig()
+  const rules = cfg.localRules
+
+  return (
+    <div style={{ padding: '4px 0 24px', maxWidth: 560 }}>
+      <h3 style={{ margin: '0 0 6px', fontSize: 16, color: 'var(--dsw-alias-label-primary, inherit)' }}>
+        ✨ 提示词优化助手
+      </h3>
+      <p style={{ margin: '0 0 18px', fontSize: 12, color: 'var(--dsw-alias-label-tertiary, inherit)' }}>
+        点击输入框右侧的 ✨ 按钮就地优化当前提示词，可用 ↩ 撤销。
+      </p>
+
+      <ApiSection />
+
+      <div style={dividerStyle} />
+
+      <div style={fieldStyle}>
+        <label style={labelStyle}>优化角色</label>
+        <select
+          style={inputStyle}
+          value={rules.currentRoleId}
+          onChange={(e) => setConfig({ localRules: { ...rules, currentRoleId: e.target.value } })}
+        >
+          <optgroup label="内置角色">
+            {PRESET_ROLES.map((role) => (
+              <option key={role.id} value={role.id}>
+                {role.name}
+              </option>
+            ))}
+          </optgroup>
+          {rules.customRoles.length > 0 && (
+            <optgroup label="自定义角色">
+              {rules.customRoles.map((role) => (
+                <option key={role.id} value={role.id}>
+                  {role.name}
+                </option>
+              ))}
+            </optgroup>
+          )}
+        </select>
+        <p style={hintStyle}>仅在开启「启用角色化前缀」时写入提示词。</p>
+      </div>
+
+      <div style={dividerStyle} />
+
+      <RolesSection />
+
+      <div style={dividerStyle} />
+
+      <div style={fieldStyle}>
+        <label style={labelStyle}>本地规则</label>
+        {RULE_LABELS.map(([key, text]) => (
+          <label key={key} style={rowStyle}>
+            <input
+              type="checkbox"
+              checked={Boolean(rules[key])}
+              onChange={(e) => setConfig({ localRules: { ...rules, [key]: e.target.checked } })}
+            />
+            <span>{text}</span>
+          </label>
+        ))}
+      </div>
+
+      <div style={fieldStyle}>
+        <label style={labelStyle}>追加的约束条款</label>
+        <textarea
+          style={{ ...inputStyle, minHeight: 64, resize: 'vertical' }}
+          value={rules.constraintsText}
+          onChange={(e) => setConfig({ localRules: { ...rules, constraintsText: e.target.value } })}
+          placeholder="使用 TypeScript 编写，代码带注释，错误处理完善"
+        />
+      </div>
+
+      <div style={dividerStyle} />
+
+      <button type="button" style={buttonStyle} onClick={resetConfig}>
+        恢复默认配置
+      </button>
+    </div>
+  )
+}
+
+export default SettingsPage

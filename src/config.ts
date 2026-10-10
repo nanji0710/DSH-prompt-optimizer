@@ -39,7 +39,9 @@ export interface LocalRulesConfig {
 export interface PluginConfig {
   /** 优化模式：local 本地规则 / llm 大模型深度优化 */
   optimizeMode: 'local' | 'llm'
-  /** LLM 模式使用的模型名称（用户自行填写，须为 DSH 中已接入的模型） */
+  /** LLM 模式使用的 provider 路由（如 deepseek-official / workbuddy；留空则用 DSH 默认模型） */
+  llmProvider: string
+  /** LLM 模式使用的模型名称（留空则用 DSH 默认模型） */
   llmModel: string
   /** 模型采样温度 0-1 */
   llmTemperature: number
@@ -94,7 +96,9 @@ export const PRESET_ROLES: RoleItem[] = [
 
 /** 默认配置 */
 export const defaultConfig: PluginConfig = {
-  optimizeMode: 'local',
+  // 默认走 LLM 真改写；调用失败会自动降级为本地规则
+  optimizeMode: 'llm',
+  llmProvider: '',
   llmModel: '',
   llmTemperature: 0.2,
   localRules: {

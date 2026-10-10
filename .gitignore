@@ -7,3 +7,6 @@ release/
 *.tsbuildinfo
 .vscode/
 .idea/
+
+# 调研用的参考仓库快照（2.3 MB，不入库；结论见 docs/local-optimization-rules.md）
+_research/

@@ -1,45 +1,49 @@
 /**
- * 客户端入口：只依赖 react（DSH 客户端模块表唯一可用的 seed 包）。
- * 所有插槽注入包 try/catch，即使插槽名不存在也不导致 web boot 崩溃。
+ * 客户端插件入口（浏览器半边）。
+ *
+ * 关键契约：宿主 cordis 通过插件对象上的 `inject` 字段做依赖注入
+ * （`new Fiber(ctx, config, Inject.resolve(plugin.inject), ...)`）。没有声明
+ * `slots` 时，`ctx.slots` 的代理 getter 会沿 fiber 父链一路抛
+ * `cannot get property "slots" without inject`，整个插件 fiber 进入 FAILED，
+ * 结果是按钮与设置页都不出现、且只留一行 web-boot 报错。
+ *
+ * 注册必须走 `ctx.slots.inject(ownerKey, () => ctx.slots.register(...))`：
+ * 槽位由父条目的 children 表声明，未声明时直接 register 会抛。
+ *
+ * 跨半边通道走宿主侧注册的 `/api/prompt-optimizer/*` HTTP 端点（见 bridge.ts），
+ * 浏览器半边直接同源 fetch 即可，**不需要注入 connection** —— 因此这里没有任何
+ * 可选依赖注入，插件在缺少 connection 的宿主上也能正常渲染按钮。
  */
 import { OptimizeButton } from './OptimizeButton'
 import { SettingsPage } from './SettingsPage'
 
 export const name = 'prompt-optimizer'
 
-export function apply(ctx: any) {
-  console.log('[prompt-optimizer] client apply, ctx keys:', Object.keys(ctx || {}))
+/** 插件级注入声明（服务名，非包名）。只列必然存在的服务。 */
+export const inject = ['slots']
 
-  // 服务引用（客户端能否拿到服务端 provide 的服务待验证）
-  try {
-    const svc = ctx?.get?.('promptOptimizer')
-    if (svc) {
-      ;(window as any).__promptOptimizerSvc = svc
-      console.log('[prompt-optimizer] got service from ctx.get')
-    } else {
-      console.warn('[prompt-optimizer] ctx.get(promptOptimizer) returned undefined')
-    }
-  } catch (e: any) {
-    console.warn('[prompt-optimizer] get service failed:', e?.message)
-  }
+const INPUT_SLOT = 'conversation.input.right'
+const SETTINGS_SLOT = 'settings.section'
 
-  // 插槽注入（包 try/catch，插槽名待与官方 API 对齐）
-  const injectSafe = (slot: string, fn: any) => {
-    try {
-      ctx?.slots?.inject(slot, fn)
-      console.log('[prompt-optimizer] injected slot:', slot)
-    } catch (e: any) {
-      console.warn('[prompt-optimizer] slot inject failed:', slot, e?.message)
-    }
-  }
+export function apply(ctx: any): void {
+  ctx.slots.inject(INPUT_SLOT, () =>
+    ctx.slots.register(
+      { name: INPUT_SLOT, id: 'prompt-optimizer-btn', order: 100, label: '一键优化提示词' },
+      OptimizeButton,
+    ),
+  )
 
-  injectSafe('composer.toolbar.model.before', () => <OptimizeButton />)
-  injectSafe('settings.sections', () => ({
-    id: 'prompt-optimizer',
-    title: '提示词优化助手',
-    icon: '✨',
-    component: <SettingsPage />
-  }))
+  ctx.slots.inject(SETTINGS_SLOT, () =>
+    ctx.slots.register(
+      {
+        name: SETTINGS_SLOT,
+        id: 'prompt-optimizer',
+        order: 30,
+        label: () => '✨ 提示词优化助手',
+      },
+      SettingsPage,
+    ),
+  )
 }
 
-export default apply
+export default { name, inject, apply }

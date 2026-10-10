@@ -1,108 +1,176 @@
-import { useState } from 'react'
-
 /**
- * 优化按钮：纯 React 组件，不依赖任何 DSH 客户端包。
- * 点击后弹窗输入文本，调用服务端 promptOptimizer.optimize，展示结果。
+ * 输入框右侧的一键优化按钮。
+ *
+ * 注册在 `conversation.input.right`（kind: list / scope: session）。该槽位的
+ * 占位组件会拿到会话作用域的标准 props，其中：
+ *   - `useInput(selector)` 读草稿（InputState.draft 即用户输入的提示词全文）
+ *   - `inputActions`      写草稿（setDraft / captureInsertion + insertText）
+ * 两者由 @deepseek-ai/dsh-client-ui-conversation 通过 ctx.uiSession.provide 提供。
+ *
+ * 优化有两条路径：LLM 真改写（走 Node 半边 RPC）优先；宿主不支持或调用失败时
+ * 落回本地规则引擎，保证按钮永远给得出结果。
  */
-export function OptimizeButton() {
-  const [open, setOpen] = useState(false)
-  const [input, setInput] = useState('')
-  const [output, setOutput] = useState('')
-  const [loading, setLoading] = useState(false)
+import { useRef, useState } from 'react'
+import { optimizePrompt, resolveRole } from './optimize'
+import {
+  OptimizeError,
+  isBridgeReady,
+  requestOptimize,
+  toSettingsPayload,
+} from './bridge'
+import { getConfig } from './store'
 
-  const handleOptimize = async () => {
-    if (!input.trim()) return
-    setLoading(true)
-    try {
-      // 服务引用由 index.tsx 的 apply(ctx) 挂到 window.__promptOptimizerSvc
-      const svc = window.__promptOptimizerSvc
-      if (!svc) {
-        setOutput('错误：优化服务未就绪，请重启 DSH')
+interface InputActionsLike {
+  setDraft?: (text: string) => void
+}
+
+interface SlotProps {
+  useInput?: (selector: (state: { draft?: string }) => string) => string
+  inputActions?: InputActionsLike
+}
+
+const buttonStyle: Record<string, string | number> = {
+  border: 'none',
+  background: 'transparent',
+  cursor: 'pointer',
+  fontSize: 15,
+  lineHeight: 1,
+  padding: '4px 6px',
+  borderRadius: 'var(--dsw-radius-sm, 4px)',
+  color: 'var(--dsw-alias-label-secondary, inherit)',
+  display: 'inline-flex',
+  alignItems: 'center',
+  justifyContent: 'center',
+}
+
+const hintStyle: Record<string, string | number> = {
+  fontSize: 11,
+  lineHeight: 1.3,
+  marginLeft: 4,
+  maxWidth: 220,
+  whiteSpace: 'normal',
+  color: 'var(--dsw-alias-label-tertiary, inherit)',
+}
+
+interface InnerProps {
+  useInput: (selector: (state: { draft?: string }) => string) => string
+  setDraft: (text: string) => void
+}
+
+/** 钩子必须无条件调用，因此把「缺 props」的分支留在外层。 */
+function OptimizeButtonInner({ useInput, setDraft }: InnerProps) {
+  const draft = useInput((state) => state?.draft ?? '')
+  const [previous, setPrevious] = useState<string | null>(null)
+  const [hint, setHint] = useState('')
+  const [busy, setBusy] = useState(false)
+  const abortRef = useRef<AbortController | null>(null)
+
+  const wantsLlm = () => getConfig().optimizeMode === 'llm' && isBridgeReady()
+
+  const run = async () => {
+    if (busy) return
+    const text = (draft ?? '').trim()
+    if (text === '') {
+      setHint('输入框为空')
+      return
+    }
+
+    // 本地规则模式：同步完成，无需等待
+    if (!wantsLlm()) {
+      const next = optimizePrompt(text)
+      if (next === text) {
+        setHint('已符合规则')
         return
       }
-      const result = await svc.optimize(input)
-      setOutput(result)
-    } catch (e: any) {
-      setOutput('优化失败：' + (e?.message || String(e)))
-    } finally {
-      setLoading(false)
+      setPrevious(draft)
+      setDraft(next)
+      setHint('已优化（本地规则）')
+      return
     }
+
+    setBusy(true)
+    setHint('正在优化…')
+    const controller = new AbortController()
+    abortRef.current = controller
+    try {
+      const optimized = await requestOptimize(
+        text,
+        toSettingsPayload(getConfig()),
+        controller.signal,
+      )
+      if (optimized === text) {
+        setHint('模型认为已足够清晰')
+        return
+      }
+      setPrevious(draft)
+      setDraft(optimized)
+      setHint('已优化（LLM 改写）')
+    } catch (error) {
+      if (controller.signal.aborted) {
+        setHint('已取消')
+        return
+      }
+      // 服务端附带本地降级结果时直接用它，否则现场跑一次本地规则
+      const fallback =
+        error instanceof OptimizeError && error.fallback ? error.fallback : optimizePrompt(text)
+      const reason = error instanceof Error ? error.message : String(error)
+      setPrevious(draft)
+      setDraft(fallback)
+      setHint(`LLM 失败，已降级为本地规则：${reason}`)
+    } finally {
+      abortRef.current = null
+      setBusy(false)
+    }
+  }
+
+  const undo = () => {
+    if (previous === null) return
+    setDraft(previous)
+    setPrevious(null)
+    setHint('已撤销')
+  }
+
+  const cancel = () => {
+    abortRef.current?.abort()
   }
 
   return (
     <>
       <button
-        onClick={() => setOpen(true)}
-        title="一键优化提示词"
-        style={{
-          border: 'none',
-          background: 'transparent',
-          cursor: 'pointer',
-          fontSize: 16,
-          padding: '4px 8px'
-        }}
+        type="button"
+        style={{ ...buttonStyle, opacity: busy ? 0.5 : 1 }}
+        title={busy ? '正在优化…点击取消' : '一键优化提示词'}
+        onClick={() => (busy ? cancel() : void run())}
       >
-        ✨
+        {busy ? '⏳' : '✨'}
       </button>
-      {open && (
-        <div
-          style={{
-            position: 'fixed',
-            top: 0, left: 0, right: 0, bottom: 0,
-            background: 'rgba(0,0,0,.4)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            zIndex: 9999
-          }}
-          onClick={() => setOpen(false)}
-        >
-          <div
-            style={{
-              width: 560,
-              maxWidth: '90vw',
-              background: '#fff',
-              borderRadius: 12,
-              padding: 20,
-              boxShadow: '0 8px 32px rgba(0,0,0,.2)',
-              fontFamily: 'system-ui, sans-serif'
-            }}
-            onClick={(e) => e.stopPropagation()}
-          >
-            <h3 style={{ margin: '0 0 12px' }}>✨ 一键优化提示词</h3>
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              placeholder="输入待优化的提示词..."
-              style={{
-                width: '100%', height: 120,
-                padding: 8,
-                border: '1px solid #ddd',
-                borderRadius: 6,
-                fontSize: 14,
-                resize: 'vertical'
-              }}
-            />
-            <div style={{ marginTop: 12, display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-              <button onClick={() => setOpen(false)} style={{ padding: '6px 14px', borderRadius: 6, border: '1px solid #ddd', background: '#fff', cursor: 'pointer' }}>
-                关闭
-              </button>
-              <button
-                onClick={handleOptimize}
-                disabled={loading}
-                style={{ padding: '6px 14px', borderRadius: 6, border: 'none', background: '#4f46e5', color: '#fff', cursor: 'pointer' }}
-              >
-                {loading ? '优化中...' : '开始优化'}
-              </button>
-            </div>
-            {output && (
-              <div style={{ marginTop: 12, padding: 10, background: '#f5f5f5', borderRadius: 6, whiteSpace: 'pre-wrap', fontSize: 13 }}>
-                {output}
-              </div>
-            )}
-          </div>
-        </div>
+      {previous !== null && !busy && (
+        <button type="button" style={buttonStyle} title="撤销本次优化" onClick={undo}>
+          ↩
+        </button>
       )}
+      {hint !== '' && <span style={hintStyle}>{hint}</span>}
     </>
   )
 }
+
+let warned = false
+
+export function OptimizeButton(props: SlotProps) {
+  const useInput = props?.useInput
+  const setDraft = props?.inputActions?.setDraft
+  // 槽位不在会话作用域内时拿不到这两个标准 props，此时不渲染。
+  if (typeof useInput !== 'function' || typeof setDraft !== 'function') {
+    if (!warned) {
+      warned = true
+      console.warn(
+        '[prompt-optimizer] 输入框按钮未渲染：槽位缺少标准会话 props。',
+        { useInput: typeof useInput, setDraft: typeof setDraft, keys: Object.keys(props ?? {}) },
+      )
+    }
+    return null
+  }
+  return <OptimizeButtonInner useInput={useInput} setDraft={setDraft} />
+}
+
+export default OptimizeButton
