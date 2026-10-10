@@ -1,6 +1,6 @@
 {
   "name": "prompt-optimizer",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "DSH 涓€閿彁绀鸿瘝浼樺寲鎻掍欢锛屾敮鎸佹湰鍦拌鍒欓浂鎴愭湰浼樺寲涓庤鑹插寲 LLM 娣卞害浼樺寲",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

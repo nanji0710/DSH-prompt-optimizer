@@ -180,13 +180,21 @@ const SHORT_INPUTS = [
 
 for (const [input, expectedTask] of SHORT_INPUTS) {
   const r = opt(input)
-  const bullets = (r.text.match(/^- /gm) || []).length
+  // v0.3.3：渲染对齐 LLM 侧形状——去掉「要求：」块与场景标题，条目用 `1. ` 编号；
+  // 单条要求直接内联在同一句话里（`写个爬虫：给可直接运行的完整代码，标注语言。`）。
+  const numbered = (r.text.match(/^\d+\. /gm) || []).length
   const ratio = [...r.text].length / [...input].length
   check(
     `V7-1-${input.slice(0, 6)}`,
-    `验收7：${input} 短诉求不加标题且只 1 条要求`,
-    !/^(?:请排查|请完成|请撰写|请回答)/.test(r.text) && bullets <= 1,
-    { input, task: r.task, expected: expectedTask, bullets, actual: r.text }
+    `验收7：${input} 短诉求不加标题、不加"要求："块、只 1 条要求`,
+    // 疑问句是唯一允许换行的短诉求：`为什么X。\n先给一句话结论。` ——
+    // LLM 侧对疑问句也是分方向展开的多行形态，内联会拼出
+    // `为什么我的接口会超时：先给一句话结论。` 这种病句。
+    !/^(?:请排查|请完成|请撰写|请回答)/.test(r.text) &&
+      !/要求：/.test(r.text) &&
+      numbered === 0 &&
+      (r.task === 'qa' || !r.text.includes('\n')),
+    { input, task: r.task, expected: expectedTask, numbered, actual: r.text }
   )
   check(
     `V7-2-${input.slice(0, 6)}`,
@@ -201,7 +209,7 @@ const bandMid = opt('请帮我写一个数据同步脚本，它需要支持增�
 check(
   'V7-3',
   '验收7：30-80 字原文给 2 条要求',
-  (bandMid.text.match(/^- /gm) || []).length === 2,
+  (bandMid.text.match(/^\d+\. /gm) || []).length === 2,
   { length: [...bandMid.text].length, actual: bandMid.text }
 )
 
@@ -216,7 +224,7 @@ const bandLong = opt(LONG_INPUT)
 check(
   'V7-4',
   '验收7：长原文（非动词开头）给满 3 条要求',
-  (bandLong.text.match(/^- /gm) || []).length === 3,
+  (bandLong.text.match(/^\d+\. /gm) || []).length === 3,
   { length: [...bandLong.text].length, actual: bandLong.text }
 )
 
@@ -346,7 +354,8 @@ const noTemplate = opt(RECONCILE_INPUT, { ...RULES, applyTemplate: false })
 check(
   'B-switch-template',
   '关闭「紧凑重组」后退化为兜底模板',
-  !/请排查以下数据差异/.test(noTemplate.text) && /直接回答/.test(noTemplate.text),
+  // v0.3.3：兜底不再有「要求：」块，改为内联一句（`…：按常规补齐缺失信息，不要反问。`）
+  !/请排查/.test(noTemplate.text) && /不要反问/.test(noTemplate.text),
   { actual: noTemplate.text.slice(0, 80) }
 )
 

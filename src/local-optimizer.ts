@@ -311,125 +311,180 @@ function looksClear(text: string): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// Step 2 紧凑重组（五个模板，只套最匹配的一个）
+// Step 2 紧凑重组（一句话 + 编号条目，与 LLM 侧输出同形）
 // ---------------------------------------------------------------------------
 
-const RECONCILE_REQUIREMENTS = [
-  '先给出差异出现在哪个环节（取数口径 / 计算逻辑 / 关联聚合 / 调度时效）',
-  '每个原因给一条可验证的 SQL 或检查方法',
-  '最后给修正建议，不要改线上数据'
+/** ★ v0.3.3：条目的写法对齐 LLM 侧的实测输出。
+ *
+ * 旧版渲染是「字段标签块 + `要求：` + `- ` 列表」：
+ *
+ * ```
+ * 请排查以下数据差异并定位原因：
+ *
+ * 涉及平台与指标：拼多多（GMV、去退数量）
+ * 对比对象：结果表、底表
+ * 已知现象：结果表和底表有差异
+ *
+ * 要求：
+ * - 先给出差异出现在哪个环节（取数口径 / 计算逻辑 / 关联聚合 / 调度时效）
+ * ```
+ *
+ * 同一句原文，LLM 侧（规格 §4.3 的期望形状）只有：
+ *
+ * ```
+ * 请排查拼多多（GMV、去退数量）在结果表与底表间的差异：
+ * 1. 定位出在取数口径、计算逻辑、关联聚合还是调度时效
+ * ```
+ *
+ * 差别不在信息量，而在**载体**：实体/对比对象被 LLM 塞进同一句话，
+ * 「已知现象」因为与那句话重复而被省略，`要求：`/`- ` 这两层样板也去掉了。
+ * 用户反馈"本地优化规则还是没有参考 LLM 进行简化"，指的就是这一层。
+ * 因此这里保留 §3.3 的抽取逻辑与 §六 的三要素，只把**渲染**换成 LLM 的形状。
+ */
+
+const RECONCILE_ITEMS = [
+  '定位出在取数口径、计算逻辑、关联聚合还是调度时效',
+  '给一条可验证的 SQL 或检查方法',
+  '给修正建议，不要改线上数据'
 ]
 
-const CODE_REQUIREMENTS = [
-  '给完整可运行代码，标注语言',
+const CODE_ITEMS = [
+  '给可直接运行的完整代码，标注语言',
   '关键逻辑加注释，不要逐行解释',
-  '如果有多种实现，给推荐方案 + 一句话理由'
+  '有多种实现时给推荐方案和一句话理由'
 ]
 
-const DOC_REQUIREMENTS = [
+const DOC_ITEMS = [
   'Markdown 格式，结论先行',
   '不超过 500 字',
   '缺失的背景按常规处理，不要反问'
 ]
 
-const QA_REQUIREMENTS = [
+const QA_ITEMS = [
   '先给一句话结论',
   '再分 2-3 点解释',
-  '不确定的地方直接说"不确定"，不要编造'
+  '不确定的地方直接说不确定，不要编造'
 ]
 
-/** 场景标题只在原文既短又不像指令时才加。
+/** 兜底模板只补一句：缺信息不要反问（规格 §二「缺信息不问」）。
  *
- * 短诉求本身就是一句完整指令（`写个爬虫`、`总结一下这份周报`），前面再挂
- * 「请帮我处理以下开发任务：」只是 11 个字符的噪声，且违反规格 §4.1 规则 3
- * 「以动词开头」——原文已经以动词开头了。因此只要原文已经以动词/「请」开头，
- * 或长度已够（信息完整），都直接省掉标题。
+ * 措辞必须对「写请假条」和「排查超时」都成立，所以不能用「直接回答」——
+ * 那是个问句专用的说法，挂在写作类诉求后面会变成病句。
  */
-const TITLE_MIN_LENGTH = 30
+const GENERAL_ITEMS = ['按常规补齐缺失信息，不要反问']
 
-function needsTitle(core: string): boolean {
-  return [...core].length >= TITLE_MIN_LENGTH && !VERB_HEAD.test(core)
+/** 条目是否已经写在原文里了——幂等的关键防线。
+ *
+ * 二次优化时 `compose` 会再算一次条目，若不做这个判断就会把同一句要求
+ * 追加第二遍（`写个爬虫：给可直接运行的完整代码…：给可直接运行的完整代码…`）。
+ * 取前 6 个字符做探针而不是整句比对：用户把条目改写过一两个字时仍应视为已有。
+ */
+function alreadyHas(text: string, item: string): boolean {
+  return text.includes([...item].slice(0, 6).join(''))
 }
 
-/** 要求条数：按原文长度取前 N 条。 */
-function takeRequirements(requirements: string[], original: string): string[] {
-  return requirements.slice(0, requirementLimit(original))
+/** 按原文长度分档取条目，并剔除原文里已经写过的。
+ *
+ * ★ 幂等防线（实测踩过）：只做逐条剔除是不够的。`帮我看看这段代码为什么会报错`
+ * 首轮只进 1 条（14 字 → 上限 1），产出 39 字；二次优化时分档按 39 字算成 2 条，
+ * 于是第 1 条被剔除、第 2 条被追加，输出又变了。
+ * 因此判据改为「只要原文里出现过**我们自己会补的任意一条**，就认定这段文本
+ * 是本引擎的产物，一律不再追加」。探针取各条目前 6 字，措辞足够特异，不会
+ * 误伤正常诉求。
+ */
+function itemsFor(bank: string[], original: string, core: string): string[] {
+  if (bank.some((item) => alreadyHas(core, item))) return []
+  return bank.slice(0, requirementLimit(original))
 }
 
-/** 把抽取到的约束渲染成额外的要求条目（只写原文里真实存在的）。 */
+/** 约束条目同样要防重复追加（二次优化时 `时间范围：最近7天` 会被再抽一次）。 */
 function constraintBullets(draft: Draft): string[] {
   const bullets: string[] = []
   if (draft.time) bullets.push(`时间范围：${draft.time}`)
   if (draft.scope) bullets.push(`范围限定：${draft.scope}`)
   if (draft.output) bullets.push(`输出形式：${draft.output}`)
-  return bullets
+  return bullets.filter((bullet) => !alreadyHas(draft.core, bullet))
 }
 
-function render(title: string, body: string, requirements: string[]): string {
-  const parts = [title ? `${title}\n\n${body}` : body]
-  if (requirements.length > 0) {
-    parts.push(['要求：', ...requirements.map((item) => `- ${item}`)].join('\n'))
+/** 摘掉结尾标点，避免拼出「…。：」。 */
+function trimTail(text: string): string {
+  return text.replace(/[。．.!！?？;；,，、\s]+$/u, '')
+}
+
+/**
+ * 渲染：单条目内联在同一句话里，多条目换行编号。
+ *
+ * 这正是 LLM 侧对这两类输入的实际写法——`把这段代码重构一下` →
+ * `请重构这段代码，保持现有功能不变，并说明每处改动理由。`（内联）；
+ * 对账类三条则换行编号。条目为空时原样返回，保证幂等。
+ *
+ * ★ 疑问句不能走内联：`为什么我的接口会超时：先给一句话结论。` 是病句
+ * （疑问句后接冒号再接祈使句，中文不通）。LLM 侧对疑问句也是**独立成段**
+ * 展开几个可能方向，故这里改为原文单独一行、要求另起一行。
+ */
+function renderItems(core: string, items: string[], question = false): string {
+  if (items.length === 0) return core
+  if (question) {
+    const head = /[？！?!]$/.test(core) ? trimTail(core) + core.slice(-1) : `${trimTail(core)}。`
+    return [head, ...items.map((item) => `${item}。`)].join('\n')
   }
-  return parts.join('\n\n').trim()
+  const head = trimTail(core)
+  if (items.length === 1) return `${head}：${items[0]}。`
+  return [head, ...items.map((item, index) => `${index + 1}. ${item}`)].join('\n').replace(/^(.*)$/m, '$1：')
 }
 
 /** 组装一个场景的完整输出。 */
 function compose(draft: Draft, _config: LocalRulesConfig): { text: string; template: string } {
   const extra = constraintBullets(draft)
   const entities = associateMetrics(draft.core, draft.platform, draft.metric)
-  const target = draft.table.join('、') || '相关数据表'
-  const titled = needsTitle(draft.core)
+  const scope = draft.table.join('与')
 
   switch (draft.task) {
     case 'reconcile': {
-      const bodyLines: string[] = []
-      if (entities) bodyLines.push(`涉及平台与指标：${entities}`)
-      bodyLines.push(`对比对象：${target}`)
-      if (draft.anomaly) bodyLines.push(`已知现象：${draft.anomaly}`)
-      return {
-        template: 'T1',
-        // ★ 对账三要素是**交付物本身**（规格 §六 验收标准 4 硬性要求：定位环节 +
-        // 验证方法 + 修正建议），不是凑数的装饰，故不参与条数分档。
-        // 标题也不省：对账输出是「标题 + 字段」的表单结构，正文全是字段名，
-        // 去掉标题会变成以「对比对象：」开头的残片。
-        text: render(
-          '请排查以下数据差异并定位原因：',
-          bodyLines.join('\n'),
-          [...RECONCILE_REQUIREMENTS, ...extra]
-        )
-      }
+      // 实体与对比对象内联进同一句话（规格 §4.3 的形状），不再用字段标签。
+      const subject = entities && scope
+        ? `${entities}在${scope}间`
+        : scope
+          ? `${scope}的`
+          : entities
+            ? `${entities}的`
+            : '以下数据'
+      const head = `请排查${subject}差异`
+      // 「已知现象」与上面那句话通常完全重复（用户描述差异的那句话就是它），
+      // 故只在它带来了新信息——一个具体数字——时才保留（规格 §1.3 WorkBuddy 的优点）。
+      const note = /\d/.test(draft.anomaly) ? `。${draft.anomaly}。` : ''
+      // ★ 对账三要素是**交付物本身**（规格 §六 验收标准 4 硬性要求：定位环节 +
+      // 验证方法 + 修正建议），不是凑数的装饰，故不参与条数分档。
+      const items = [...RECONCILE_ITEMS, ...extra].filter((item) => !alreadyHas(head, item))
+      if (items.length === 0) return { template: 'T1', text: head + note }
+      const lines = items.map((item, index) => `${index + 1}. ${item}`)
+      return { template: 'T1', text: [`${head}${note || '：'}`, ...lines].join('\n') }
     }
     case 'code':
       return {
         template: 'T2',
-        text: render(
-          titled ? '请完成以下开发任务：' : '',
-          draft.core,
-          [...takeRequirements(CODE_REQUIREMENTS, draft.core), ...extra]
-        )
+        text: renderItems(draft.core, [...itemsFor(CODE_ITEMS, draft.core, draft.core), ...extra])
       }
     case 'doc':
       return {
         template: 'T3',
-        text: render(
-          titled ? '请撰写以下内容：' : '',
-          draft.core,
-          [...takeRequirements(DOC_REQUIREMENTS, draft.core), ...extra]
-        )
+        text: renderItems(draft.core, [...itemsFor(DOC_ITEMS, draft.core, draft.core), ...extra])
       }
     case 'qa':
       return {
         template: 'T4',
-        text: render(
-          titled ? '请回答：' : '',
+        // 疑问句用「原文。」+ 换行的写法；非疑问句（`如何设计…` 这类祈使式问法
+        // 里也有）仍走通用内联渲染。
+        text: renderItems(
           draft.core,
-          [...takeRequirements(QA_REQUIREMENTS, draft.core), ...extra]
+          [...itemsFor(QA_ITEMS, draft.core, draft.core), ...extra],
+          QUESTION_HEAD.test(draft.core)
         )
       }
     default:
       return {
         template: 'T5',
-        text: `${draft.core}\n\n要求：直接回答，不要反问，缺失信息按常识处理。`
+        text: renderItems(draft.core, itemsFor(GENERAL_ITEMS, draft.core, draft.core))
       }
   }
 }
@@ -459,8 +514,8 @@ function fitBudget(draft: Draft, config: LocalRulesConfig): { text: string; temp
   const lean = compose({ ...draft, time: '', scope: '', output: '' }, config)
   if ([...lean.text].length <= budget) return lean
 
-  // 最后兜底：只保留"核心诉求 + 一行要求"，等价于模板 5
-  return { template: 'T5', text: `${draft.core}\n\n要求：直接回答，不要反问，缺失信息按常识处理。` }
+  // 最后兜底：只保留"核心诉求 + 一句要求"，等价于模板 5
+  return { template: 'T5', text: renderItems(draft.core, itemsFor(GENERAL_ITEMS, draft.core, draft.core)) }
 }
 // ---------------------------------------------------------------------------
 // 角色注入（默认不注入；注入时只占 1 行）
