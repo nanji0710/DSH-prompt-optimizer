@@ -1,10 +1,11 @@
 /**
- * 本地优化引擎测试 —— 逐条对应 docs/local-optimization-rules.md 附录 B 的 44 条用例。
+ * 本地优化引擎测试 —— 对应 docs/optimization-directions.md §六 的 6 条验收标准。
  *
- * 运行：node test/local-optimizer.test.mjs（需先 npm run build，测试读 dist 产物）
- * 断言口径（文档 :1229-1230）：
- *   ok(input, expected) => localOptimize(input, defaultConfig.localRules, generalRole).text === expected
- *   same(input)         => 输出与输入逐字相同且 changed === false
+ * 运行：`node test/local-optimizer.test.mjs`（需先 `npm run build`，测试读 dist 产物）
+ *
+ * ★ v0.3.0：整套用例已随引擎重写。旧版 44 条测的是被取代的
+ * L0/L1/L2/L3 四层体系（客套清除、结构改写、约束追加），
+ * 那些规则已按规格 §三 明确砍掉。
  */
 import { createRequire } from 'node:module'
 import { fileURLToPath } from 'node:url'
@@ -16,10 +17,11 @@ const dist = path.resolve(here, '..', 'dist')
 
 const { localOptimize } = require(path.join(dist, 'local-optimizer.js'))
 const { defaultConfig, PRESET_ROLES } = require(path.join(dist, 'config.js'))
+const { containsPlaceholder, findPlaceholder } = require(path.join(dist, 'prompt.js'))
 
 const RULES = defaultConfig.localRules
 const GENERAL = PRESET_ROLES[PRESET_ROLES.length - 1]
-const FRONTEND = PRESET_ROLES.find((r) => r.id === 'frontend-dev')
+const ANALYST = PRESET_ROLES.find((r) => r.id === 'data-analyst')
 
 /* ------------------------------ 迷你测试框架 ------------------------------ */
 let pass = 0
@@ -33,251 +35,308 @@ function check(id, title, cond, detail) {
   failures.push({ id, title, detail })
 }
 
-function opt(input, rules = RULES, role = GENERAL) {
-  return localOptimize(input, rules, role)
-}
+const opt = (input, rules = RULES, role = GENERAL) => localOptimize(input, rules, role)
 
-/** 附录 B 的 ok()：输出必须逐字等于 expected。 */
-function ok(id, title, input, expected, rules, role) {
-  const r = opt(input, rules, role)
-  check(id, title, r.text === expected, {
-    input: JSON.stringify(input),
-    expected: JSON.stringify(expected),
-    actual: JSON.stringify(r.text),
-    applied: r.applied,
-    reason: r.reason,
-    failed: r.failed?.map((f) => String(f.error?.message ?? f.error))
-  })
-}
+/* ---------------------------------------------------------------------------
+ * §六 验收标准 1：输出里 grep 不到 待补充 / TODO / xxx / <占位符>
+ * ------------------------------------------------------------------------ */
 
-/** 附录 B 的 same()：逐字不变且 changed === false。 */
-function same(id, title, input, rules, role) {
-  const r = opt(input, rules, role)
-  check(id, title, r.text === input && r.changed === false, {
-    input: JSON.stringify(input),
-    actual: JSON.stringify(r.text),
-    changed: r.changed,
-    applied: r.applied,
-    reason: r.reason,
-    failed: r.failed?.map((f) => String(f.error?.message ?? f.error))
-  })
-}
+const PLACEHOLDER_INPUTS = [
+  '拼多多的GMV，去退数量，成本。京东自营的去退数量，成本。结果表和底表有一点差异，你查一下',
+  '帮我写一个数据同步脚本',
+  '为什么我的接口会超时',
+  '写个爬虫',
+  '总结一下这个季度的工作',
+  '帮我看下这个报错',
+  '设计一个订单表结构',
+  '把这个文档翻译成英文'
+]
 
-function expect(id, title, cond, detail) {
-  check(id, title, cond, detail)
-}
-
-/* ------------------------------- 1 ~ 18：L0 ------------------------------- */
-ok(1, 'L0 句首客套', '你好，帮我写个请假条', '写个请假条')
-same(2, 'L0 长度守卫回滚', '在吗，问个事')
-// 3：★文档裁决 ① —— L0-010 第 5 条 `^(?:帮我|替我|给我)[…]*` 的 `*` 允许零个分隔符，
-// 行首"帮我"必被删（文档 L0-010 自己的反例也要求删），附录 B 原期望保留"帮我"系笔误。
-ok(3, 'L0 句尾客套', '帮我改下这段代码，谢谢！', '改下这段代码')
-same(4, 'L0 句尾长度守卫', '谢谢')
-ok(5, 'L0 重复标点', '这是个问题。。。', '这是个问题。')
-same(6, 'L0 省略号不折叠', '等等……')
-same(7, 'L0 分隔线保护', '---')
-ok(8, 'L0 连续空白折叠', '帮我  写   代码', '帮我 写 代码')
-ok(9, 'L0 连续空行折叠', 'A\n\n\n\nB', 'A\n\nB')
-// 10：★文档裁决 ② —— 清洗后文本含"写代码"，L1-001 判 task='code'，L2-002 恒跑必然追加
-// code 格式模板，故不可能逐字等于 `"需求 ：写代码"`。断言改为「以此为前缀」。
-{
-  const r = opt('需求\u00A0：\u200B写代码')
-  check(10, 'L0 隐形字符归一', r.text.startsWith('需求 ：写代码'), {
-    input: JSON.stringify('需求\u00A0：\u200B写代码'),
-    actual: JSON.stringify(r.text),
-    applied: r.applied
-  })
-}
-ok(11, 'L0 语气词 A 档', '嗯，那个，帮我看看嗯', '那个，帮我看看')
-same(12, 'L0 语气词边界保护', '天啊，怎么会这样')
-ok(13, 'L0 程度副词叠词', '非常非常好', '非常好')
-same(14, 'L0 叠字保护', '看看这个')
-ok(15, 'L0 自指清除', '我觉得这个方案不行', '这个方案不行')
-same(16, 'L0 自指守卫 (?!的)', '我认为的正确做法是先备份')
-same(17, 'L0 不确定性词保护', '大概 3 天能做完')
-same(18, 'L0 否定词保护', '不要动接口签名')
-
-/* ------------------------------- 19 ~ 32：L1 ------------------------------ */
-ok(19, 'L1 中文序号归一', '1、先备份', '1. 先备份')
-same(20, 'L1 小数点保护', '1.5 小时就够')
-ok(21, 'L1 括号序号归一', '（2）再改配置', '2. 再改配置')
-same(22, 'L1 已是标准序号（幂等）', '3. 最后重启')
-ok(23, 'L1 项目符号归一', '— 需求梳理', '- 需求梳理')
-same(24, 'L1 粗体保护', '**重点**内容')
-same(25, 'L1 负数保护', '-5 度')
-ok(26, 'L1 顿号并列拆分', '支持微信、支付宝、银联、云闪付', '支持：\n- 微信\n- 支付宝\n- 银联\n- 云闪付')
-same(27, 'L1 顿号守卫（非并列）', '甲、乙两人先去现场')
-ok(28, 'L1 小节标题识别', '需求：登录页支持微信扫码', '### 需求\n\n登录页支持微信扫码')
-same(29, 'L1 空标题守卫', '注意：如下')
-
-// 30：同关键词只转换第一次
-{
-  const input = '注意：第一条\n其他内容\n注意：第二条'
-  const r = opt(input)
-  const headings = (r.text.match(/^###\s*注意\s*$/gm) ?? []).length
-  check(30, 'L1 标题去重（只转第一次）', headings === 1 && r.text.includes('注意：第二条'), {
-    input: JSON.stringify(input),
-    actual: JSON.stringify(r.text),
-    headings,
-    applied: r.applied
-  })
-}
-
-// 31：代码块免疫
-{
-  const input = '优化这段代码：\n```js\nconst a = 1; const b = 2\n```'
+for (const [index, input] of PLACEHOLDER_INPUTS.entries()) {
   const r = opt(input)
   check(
-    31,
-    'L1 代码块免疫',
-    r.text.includes('const a = 1; const b = 2') && !/^\s*1\.\s/m.test(r.text),
-    { actual: JSON.stringify(r.text), applied: r.applied }
+    `V1-${index + 1}`,
+    `验收1：输出零占位符（${input.slice(0, 12)}…）`,
+    !containsPlaceholder(r.text),
+    { input, actual: r.text, hit: findPlaceholder(r.text) }
   )
 }
 
-// 32：行内代码免疫
-{
-  const input = '把 `a. b` 改成 `a.b`'
+/* ---------------------------------------------------------------------------
+ * §六 验收标准 2：100 字以内的原文，优化后不超过 300 字
+ * ------------------------------------------------------------------------ */
+
+for (const [index, input] of PLACEHOLDER_INPUTS.entries()) {
+  if ([...input].length > 100) continue
   const r = opt(input)
-  check(32, 'L1 行内代码免疫', r.text.includes('`a. b`') && r.text.includes('`a.b`'), {
-    actual: JSON.stringify(r.text),
-    applied: r.applied
-  })
-}
-
-/* ------------------------------- 33 ~ 37：L2/L3 --------------------------- */
-{
-  const r = opt('用 JSON 输出配置')
-  check(33, 'L2 已声明格式则不追加', !r.text.includes('用 Markdown 输出'), {
-    actual: JSON.stringify(r.text),
-    applied: r.applied
-  })
-}
-{
-  const r = opt('总结一下这篇文章')
-  check(34, 'L2 输出格式补全', r.text.includes('输出 3-5 条要点'), {
-    actual: JSON.stringify(r.text),
-    applied: r.applied
-  })
-  const again = opt(r.text)
-  check(35, 'L2 格式补全幂等', again.text === r.text, {
-    first: JSON.stringify(r.text),
-    second: JSON.stringify(again.text),
-    applied: again.applied
-  })
-}
-{
-  const rules = { ...RULES, enableRoleOptimization: true, currentRoleId: 'frontend-dev' }
-  const r = opt('做个登录页', rules, FRONTEND)
   check(
-    36,
-    'L3 角色注入（含 rolePrompt 全文）',
-    r.text.includes('【角色设定】') && r.text.includes(FRONTEND.rolePrompt) && r.text.startsWith(`角色：${FRONTEND.name}`),
-    { actual: JSON.stringify(r.text), applied: r.applied }
+    `V2-${index + 1}`,
+    `验收2：≤100 字原文 → 输出 ≤300 字（${input.slice(0, 12)}…）`,
+    [...r.text].length <= 300,
+    { input, length: [...r.text].length, actual: r.text }
   )
-  const again = opt(r.text, rules, FRONTEND)
-  check(37, 'L3 角色注入幂等', again.text === r.text, {
-    first: JSON.stringify(r.text),
-    second: JSON.stringify(again.text),
-    applied: again.applied
+}
+
+/* ---------------------------------------------------------------------------
+ * §六 验收标准 3：原文已经很清晰时，输出接近原文（不强行加结构）
+ * ------------------------------------------------------------------------ */
+
+const CLEAR_INPUTS = [
+  '请排查结果表与底表的差异，只看拼多多，最近7天，输出表格',
+  '需求：登录页支持微信扫码',
+  '【任务】修复登录超时\n【要求】不要改动接口签名'
+]
+
+for (const [index, input] of CLEAR_INPUTS.entries()) {
+  const r = opt(input)
+  const grew = [...r.text].length / [...input].length
+  check(
+    `V3-${index + 1}`,
+    `验收3：清晰原文不强行加结构（${input.slice(0, 12)}…）`,
+    grew <= 1.6 && !/五段式/.test(r.text),
+    { input, actual: r.text, ratio: Number(grew.toFixed(2)), task: r.task }
+  )
+}
+
+/* ---------------------------------------------------------------------------
+ * §六 验收标准 4：数据对账类必须含「定位环节 + 验证方法 + 修正建议」三要素
+ * ------------------------------------------------------------------------ */
+
+const RECONCILE_INPUT =
+  '拼多多的GMV，去退数量，成本。京东自营的去退数量，成本。结果表和底表有一点差异，你查一下'
+
+const rec = opt(RECONCILE_INPUT)
+check('V4-1', '验收4：对账类判定为 reconcile 场景', rec.task === 'reconcile', { task: rec.task })
+check(
+  'V4-2',
+  '验收4：含「定位环节」',
+  /取数口径|计算逻辑|关联聚合|调度时效/.test(rec.text),
+  { actual: rec.text }
+)
+check('V4-3', '验收4：含「验证方法」（SQL 或检查方法）', /SQL|检查方法/.test(rec.text), {
+  actual: rec.text
+})
+check('V4-4', '验收4：含「修正建议」', /修正建议/.test(rec.text), { actual: rec.text })
+
+// ★ 规格 §1.1 的核心病灶：旧版只贴角色标签、不做实体抽取。
+check('V4-5', '验收4：抽出平台实体（拼多多 / 京东自营）', /拼多多/.test(rec.text) && /京东自营/.test(rec.text), {
+  actual: rec.text
+})
+check('V4-6', '验收4：抽出指标并关联到平台', /拼多多（[^）]*GMV[^）]*）/.test(rec.text), { actual: rec.text })
+check('V4-7', '验收4：不做"加前缀"式优化（不以角色行开头）', !rec.text.startsWith('角色：'), { actual: rec.text.slice(0, 40) })
+
+/* ---------------------------------------------------------------------------
+ * §六 验收标准 5：默认不注入角色；选了才加，且只加 1 行
+ * ------------------------------------------------------------------------ */
+
+const roleOff = opt('写个请假条', RULES, ANALYST)
+check(
+  'V5-1',
+  '验收5：默认不注入角色（即使选中了数据分析师）',
+  !roleOff.text.includes('数据分析师'),
+  { actual: roleOff.text }
+)
+
+const roleOn = opt('写个请假条', { ...RULES, enableRoleOptimization: true }, ANALYST)
+const roleOnLines = roleOn.text.split('\n')
+check(
+  'V5-2',
+  '验收5：开启后只加 1 行角色',
+  roleOnLines[0] === '你是一名数据分析师，回答时先给结论再给依据。',
+  { actual: roleOn.text, firstLine: roleOnLines[0] }
+)
+check('V5-3', '验收5：通用角色的 rolePrompt 为空（选它等于不注入）', GENERAL.rolePrompt === '', {
+  rolePrompt: GENERAL.rolePrompt
+})
+
+/* ---------------------------------------------------------------------------
+ * §六 验收标准 6：本地引擎响应 < 50ms；降级路径可用
+ * ------------------------------------------------------------------------ */
+
+const BIG_INPUT = '请帮我写一个数据同步脚本，'.repeat(300) + '结果表与底表有差异，你查一下'
+const t0 = process.hrtime.bigint()
+const ITERATIONS = 20
+for (let i = 0; i < ITERATIONS; i += 1) opt(BIG_INPUT)
+const avgMs = Number(process.hrtime.bigint() - t0) / 1e6 / ITERATIONS
+check('V6-1', `验收6：${[...BIG_INPUT].length} 字输入平均 ${avgMs.toFixed(2)}ms < 50ms`, avgMs < 50, {
+  avgMs
+})
+
+/* ---------------------------------------------------------------------------
+ * 质量不变量：I1 幂等 / I2 非空 / 场景路由正确
+ * ------------------------------------------------------------------------ */
+
+const IDEMPOTENT_INPUTS = [
+  ...PLACEHOLDER_INPUTS,
+  ...CLEAR_INPUTS,
+  RECONCILE_INPUT,
+  '你好，帮我写个请假条',
+  '写个排序',
+  '把这个文档翻译成英文',
+  '帮我看看这段代码为什么会报错',
+  'You are a helpful assistant. 请优化'
+]
+
+for (const [index, input] of IDEMPOTENT_INPUTS.entries()) {
+  const once = opt(input)
+  const twice = opt(once.text)
+  check(`I1-${index + 1}`, `I1 幂等：二次优化不再变化（${input.slice(0, 12)}…）`, once.text === twice.text, {
+    input,
+    once: once.text,
+    twice: twice.text
+  })
+  check(`I2-${index + 1}`, `I2 非空：输出非空（${input.slice(0, 12)}…）`, once.text.trim() !== '', {
+    input,
+    actual: once.text
   })
 }
 
-/* --------------------------- 38 ~ 42：透传与空值 --------------------------- */
-{
-  const r = opt('')
-  check(38, 'I2 空输入', r.changed === false && r.reason === 'empty' && r.text === '', {
-    actual: JSON.stringify(r.text),
-    changed: r.changed,
-    reason: r.reason
-  })
-}
-{
-  const r = opt('嗯')
-  check(39, 'I2 过短输入', r.changed === false && r.reason === 'too-short', {
-    actual: JSON.stringify(r.text),
-    changed: r.changed,
-    reason: r.reason
-  })
-}
-{
-  const r = opt('。。。')
-  check(40, 'I2 折叠后过短', r.changed === false && r.reason === 'too-short', {
-    actual: JSON.stringify(r.text),
-    changed: r.changed,
-    reason: r.reason,
-    applied: r.applied
-  })
-}
-{
-  const r = opt('You are a helpful assistant. 请优化')
-  check(41, '已是结构化提示词则透传', r.reason === 'already-structured', {
-    changed: r.changed,
-    reason: r.reason
-  })
-}
-{
-  const r = opt('abcdefghijklmnop')
-  check(42, '无规则命中', r.changed === false && r.reason === 'no-rule-matched', {
-    actual: JSON.stringify(r.text),
-    changed: r.changed,
-    reason: r.reason,
-    applied: r.applied
+/* ---------------------------------------------------------------------------
+ * 场景路由（规格 Step 1-A / 1-C）
+ * ------------------------------------------------------------------------ */
+
+const TASK_CASES = [
+  ['why-timeout', '为什么我的接口会超时', 'qa'],
+  ['how-to', '如何设计一个高并发订单系统', 'qa'],
+  ['reconcile-diff', '结果表和底表的差异帮我查一下', 'reconcile'],
+  ['reconcile-metric', 'GMV 口径对不上，排查一下', 'reconcile'],
+  ['code-bug', '这段代码报错了帮我看看怎么改', 'code'],
+  ['code-feature', '帮我实现一个导出 Excel 的功能接口', 'code'],
+  ['doc-report', '写一份这个季度的项目汇报文档', 'doc'],
+  ['doc-weekly', '这个周报帮我整理成方案', 'doc']
+]
+
+for (const [id, input, expected] of TASK_CASES) {
+  const r = opt(input)
+  check(`T-${id}`, `场景识别：${input.slice(0, 14)}… → ${expected}`, r.task === expected, {
+    input,
+    expected,
+    actual: r.task,
+    text: r.text.slice(0, 60)
   })
 }
 
-/* ----------------------------- 43：I1 批量幂等 ---------------------------- */
-{
-  const inputs = [
-    '你好，帮我写个请假条', '在吗，问个事', '帮我改下这段代码，谢谢！', '谢谢',
-    '这是个问题。。。', '等等……', '---', '帮我  写   代码', 'A\n\n\n\nB',
-    '需求\u00A0：\u200B写代码', '嗯，那个，帮我看看嗯', '天啊，怎么会这样', '非常非常好',
-    '看看这个', '我觉得这个方案不行', '我认为的正确做法是先备份', '大概 3 天能做完',
-    '不要动接口签名', '1、先备份', '1.5 小时就够', '（2）再改配置', '3. 最后重启',
-    '— 需求梳理', '**重点**内容', '-5 度', '支持微信、支付宝、银联、云闪付',
-    '甲、乙两人先去现场', '需求：登录页支持微信扫码', '注意：如下',
-    '注意：第一条\n其他内容\n注意：第二条', '优化这段代码：\n```js\nconst a = 1; const b = 2\n```',
-    '把 `a. b` 改成 `a.b`', '用 JSON 输出配置', '总结一下这篇文章'
-  ]
-  const broken = []
-  for (const input of inputs) {
-    const once = opt(input)
-    const twice = opt(once.text)
-    if (twice.text !== once.text) broken.push({ input, once: once.text, twice: twice.text })
-  }
-  check(43, 'I1 幂等（33 例批量）', broken.length === 0, broken)
-}
+/* ---------------------------------------------------------------------------
+ * 边界与透传（规格 §二「缺信息不问」+ §六 验收标准 3）
+ * ------------------------------------------------------------------------ */
 
-/* --------------------------- 44：I3 语义单调保护 --------------------------- */
-{
-  const anchors = [
-    ['大概 3 天能做完', ['大概', '3']],
-    ['不要动接口签名', ['不要']],
-    ['1.5 小时就够', ['1.5']],
-    ['**重点**内容', ['**重点**']],
-    ['-5 度', ['-5']],
-    ['把 `a. b` 改成 `a.b`', ['`a. b`', '`a.b`']]
-  ]
-  const missing = []
-  for (const [input, tokens] of anchors) {
-    const out = opt(input).text
-    for (const token of tokens) {
-      if (!out.includes(token)) missing.push({ input, token, out })
-    }
-  }
-  check(44, 'I3 语义单调（数字/否定/反引号）', missing.length === 0, missing)
-}
+const empty = opt('')
+check('B-empty', '空输入 → reason=empty 且输出为空', empty.reason === 'empty' && empty.text === '', {
+  reason: empty.reason,
+  text: empty.text
+})
 
-/* -------------------------------- 汇总输出 -------------------------------- */
+const short = opt('嗯')
+check('B-short', '过短输入 → reason=too-short 且原样返回', short.reason === 'too-short' && short.text === '嗯' && short.changed === false, {
+  reason: short.reason,
+  text: short.text,
+  changed: short.changed
+})
+
+const punctOnly = opt('。。。')
+check(
+  'B-punct',
+  '纯标点 → 不套模板（无信息可抽取）',
+  punctOnly.changed === false && punctOnly.text === '。。。',
+  { text: punctOnly.text, changed: punctOnly.changed, reason: punctOnly.reason }
+)
+
+// 客套清除：叠三层也要收敛，且不能删成空壳
+const polite = opt('你好，麻烦帮我看看这个 bug，谢谢！')
+check(
+  'B-polite',
+  '首尾客套收敛清除且保留实义（"看看这个 bug"）',
+  /看看这个 bug/.test(polite.text) && !/你好|麻烦|谢谢/.test(polite.text),
+  { actual: polite.text }
+)
+
+// ★ 规格 §二「零占位符」：绝不能出现"缺失信息用占位符标出"
+check(
+  'B-noplaceholder',
+  '规则文本里不含"用占位符标出"的旧指令',
+  !/用\s*\[待补充/.test(JSON.stringify(RULES)),
+  { rules: JSON.stringify(RULES) }
+)
+
+// 开关生效性
+const noExtract = opt(RECONCILE_INPUT, { ...RULES, extractEntities: false })
+check(
+  'B-switch-extract',
+  '关闭「信息抽取」后不再抽平台/指标',
+  !/拼多多（/.test(noExtract.text),
+  { actual: noExtract.text.slice(0, 80) }
+)
+
+const noTemplate = opt(RECONCILE_INPUT, { ...RULES, applyTemplate: false })
+check(
+  'B-switch-template',
+  '关闭「紧凑重组」后退化为兜底模板',
+  !/请排查以下数据差异/.test(noTemplate.text) && /直接回答/.test(noTemplate.text),
+  { actual: noTemplate.text.slice(0, 80) }
+)
+
+/* ---------------------------------------------------------------------------
+ * 系统提示词（规格 §四）
+ * ------------------------------------------------------------------------ */
+
+const { buildSystemPrompt, detectLanguage, stripDecoration } = require(path.join(dist, 'prompt.js'))
+
+const zhSystem = buildSystemPrompt('zh')
+check('P-1', '中文 system prompt 禁止占位符', /绝对不要出现/.test(zhSystem), {})
+check('P-2', '中文 system prompt 限制字数 ≤ 原文 3 倍', /3\s*倍/.test(zhSystem), {})
+check('P-3', '中文 system prompt 要求原文清晰时返回原文', /直接返回原文/.test(zhSystem), {})
+check('P-4', '中文 system prompt 要求可执行指令、以动词开头', /可执行的指令/.test(zhSystem), {})
+check('P-5', '中文 system prompt 不再有"扩张才是重点"的旧指令', !/扩张才是重点/.test(zhSystem), {})
+check('P-6', '中文 system prompt 不再示范 [待补充] 占位符', !/\[待补充:语言/.test(zhSystem), {})
+
+const enSystem = buildSystemPrompt('en')
+check('P-7', '英文 system prompt 禁止占位符', /Never emit markers/.test(enSystem), {})
+check('P-8', '英文 system prompt 限制 3x', /3x/.test(enSystem), {})
+check('P-9', '英文 system prompt 不再示范 [TODO: language', !/\[TODO: language/.test(enSystem), {})
+
+const withRole = buildSystemPrompt('zh', '你是一名数据分析师，回答时先给结论再给依据。')
+check('P-10', '角色以「回答视角」注入且只有一行', withRole.includes('# 回答视角') && withRole.includes('先给结论再给依据'), {})
+check('P-11', '空 rolePrompt 不产生角色块', !buildSystemPrompt('zh', '').includes('# 回答视角'), {})
+
+check('P-12', '语言识别：中文 → zh', detectLanguage('帮我写个脚本') === 'zh', {})
+check('P-13', '语言识别：英文 → en', detectLanguage('write me a scraper') === 'en', {})
+
+check('P-14', 'stripDecoration 去掉整体代码围栏', stripDecoration('```\n请排查差异\n```') === '请排查差异', {
+  actual: stripDecoration('```\n请排查差异\n```')
+})
+check('P-15', 'stripDecoration 去掉「优化后：」前缀', stripDecoration('优化后：请排查差异') === '请排查差异', {
+  actual: stripDecoration('优化后：请排查差异')
+})
+
+check('P-16', 'containsPlaceholder 命中各种占位符形态', [
+  '[待补充:表名]',
+  '【待补充】',
+  'TODO',
+  '[TODO: table]',
+  '<fill here>',
+  'xxx'
+].every((s) => containsPlaceholder(s)), {})
+check('P-17', 'containsPlaceholder 不误伤正常代码', [
+  'Promise<T>',
+  '<div>hello</div>',
+  'Array<string>',
+  '请排查差异'
+].every((s) => !containsPlaceholder(s)), {})
+
+/* ------------------------------- 结果汇总 ------------------------------- */
 const total = pass + failures.length
 if (failures.length === 0) {
   console.log(`✓ 全部通过：${pass}/${total}`)
   process.exit(0)
 }
-console.log(`✗ ${failures.length}/${total} 条失败（通过 ${pass}）\n`)
-for (const f of failures.slice(0, 20)) {
-  console.log(`#${f.id} ${f.title}`)
-  console.log(`   ${JSON.stringify(f.detail)}\n`)
+
+console.error(`✗ 失败 ${failures.length}/${total}\n`)
+for (const item of failures.slice(0, 20)) {
+  console.error(`[${item.id}] ${item.title}`)
+  for (const [key, value] of Object.entries(item.detail ?? {})) {
+    console.error(`    ${key}: ${typeof value === 'string' ? value : JSON.stringify(value)}`)
+  }
+  console.error('')
 }
+if (failures.length > 20) console.error(`… 其余 ${failures.length - 20} 条省略`)
 process.exit(1)

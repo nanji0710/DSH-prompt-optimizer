@@ -18,7 +18,13 @@
 import { localOptimizeText } from './local-optimizer'
 import { defaultConfig, PRESET_ROLES } from './config'
 import type { PluginConfig, RoleItem, LocalRulesConfig } from './config'
-import { buildSystemPrompt, buildUserPrompt, detectLanguage, stripDecoration } from './prompt'
+import {
+  buildSystemPrompt,
+  buildUserPrompt,
+  detectLanguage,
+  findPlaceholder,
+  stripDecoration
+} from './prompt'
 import {
   OPTIMIZE_ENDPOINT,
   PROVIDERS_ENDPOINT,
@@ -106,7 +112,7 @@ export function apply(ctx: any) {
   ): Promise<string> => {
     const cleaned = content.trim()
     if (!cleaned) return ''
-    if (cleaned.length < 4) return cleaned
+    if ([...cleaned].length < 3) return cleaned
 
     const llm = ctx.get?.('llm') ?? ctx.llm
     if (!llm?.stream) {
@@ -169,7 +175,30 @@ export function apply(ctx: any) {
       detail.push(`chunks=[${[...chunkTypes].join(',')}]`)
       throw new Error(`模型未返回正文（${detail.join('；')}）`)
     }
-    return stripDecoration(text)
+
+    const optimized = stripDecoration(text)
+
+    // ★ 规格 §六 验收标准 1：输出里不得出现任何占位符。
+    // system prompt 已明确禁止，但模型偶尔仍会写出 [待补充:表名] 这类标记，
+    // 且它恰好是本插件 v0.2 最被诟病的问题。这里做一次兜底拦截：命中就抛错，
+    // 由调用方降级到本地规则（本地引擎保证零占位符），而不是把脏结果写回输入框。
+    const placeholder = findPlaceholder(optimized)
+    if (placeholder) {
+      throw new Error(
+        `模型输出里仍有占位符 ${JSON.stringify(placeholder)}，已放弃该结果并降级为本地规则`
+      )
+    }
+
+    // 篇幅提示（规格 §4.1 规则 2：不超过原文 3 倍）。只记日志不拦截：
+    // 「原文清晰时返回原文」这类正确行为也可能略超比例，硬拦会误伤。
+    const ratio = [...cleaned].length > 0 ? [...optimized].length / [...cleaned].length : 1
+    if (ratio > 3.5) {
+      ctx.logger?.warn?.(
+        `prompt-optimizer: 模型输出 ${[...optimized].length} 字，为原文的 ${ratio.toFixed(1)} 倍，可能仍在套模板`
+      )
+    }
+
+    return optimized
   }
 
   /**

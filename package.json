@@ -1,6 +1,6 @@
 {
   "name": "prompt-optimizer",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "DSH 一键提示词优化插件，支持本地规则零成本优化与角色化 LLM 深度优化",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

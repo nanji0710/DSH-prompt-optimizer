@@ -13,23 +13,25 @@ import type { RoleItem } from '../config'
 import { useConfig, setConfig, resetConfig } from './store'
 import { isBridgeReady, requestProviders, type ProviderInfo } from './bridge'
 
+/**
+ * 本地规则开关。
+ *
+ * ★ v0.3.0：从旧版 7 个清洗/结构开关改为**两级流水线**的 3 个步骤开关。
+ * 旧版的「清洗空白与空行」「剔除客套话」「规范列表」「自动分段」
+ * 「抽取小节标题」「追加约束条款」已全部移除：实测对短诉求没有增量，
+ * 只增加篇幅（见 docs/optimization-directions.md §1.1、§三）。
+ */
 type RuleKey =
-  | 'cleanWhitespace'
-  | 'filterPoliteWords'
-  | 'normalizeList'
-  | 'autoSplitParagraph'
-  | 'splitSections'
-  | 'appendConstraints'
+  | 'extractEntities'
+  | 'actionOriented'
+  | 'applyTemplate'
   | 'enableRoleOptimization'
 
 const RULE_LABELS: Array<[RuleKey, string]> = [
-  ['cleanWhitespace', '清洗空白与空行'],
-  ['filterPoliteWords', '剔除客套话（麻烦/帮我/谢谢…）'],
-  ['normalizeList', '规范列表编号与符号'],
-  ['autoSplitParagraph', '按句号/分号自动分段'],
-  ['splitSections', '按关键词抽取小节标题'],
-  ['appendConstraints', '追加约束条款'],
-  ['enableRoleOptimization', '启用角色化前缀'],
+  ['extractEntities', '信息抽取（平台/指标/数据表/约束）'],
+  ['actionOriented', '动作导向（改写成"请+动词"开头的指令）'],
+  ['applyTemplate', '紧凑重组（按场景套用最匹配的一个模板）'],
+  ['enableRoleOptimization', '注入角色行（默认关；开启后只加 1 句）'],
 ]
 
 const labelStyle: Record<string, string | number> = {
@@ -242,7 +244,7 @@ function RolesSection() {
     <div style={fieldStyle}>
       <h4 style={sectionTitleStyle}>自定义角色</h4>
       <p style={{ ...hintStyle, marginTop: 0 }}>
-        自定义角色用来给改写补充专业视角（如「资深 iOS 工程师」）。可在上方「优化角色」里选中，并开启「启用角色化前缀」后生效。
+        自定义角色用来补充一句回答视角（如「先给结论再给依据」）。可在上方「优化角色」里选中，并开启「注入角色行」后生效。
       </p>
 
       {rules.customRoles.length === 0 && !draftRole && (
@@ -291,13 +293,16 @@ function RolesSection() {
             onChange={(e) => setDraftRole({ ...draftRole, description: e.target.value })}
           />
 
-          <label style={{ ...labelStyle, marginTop: 12 }}>角色提示词</label>
-          <textarea
-            style={{ ...inputStyle, minHeight: 80, resize: 'vertical' }}
+          <label style={{ ...labelStyle, marginTop: 12 }}>角色提示词（一句话）</label>
+          <input
+            style={inputStyle}
             value={draftRole.rolePrompt}
-            placeholder="例如：你是资深 iOS 工程师，熟悉 SwiftUI、内存管理与 App Store 审核规范。改写时请补充平台约束、性能指标与验收标准。"
+            placeholder="例如：你是一名数据分析师，回答时先给结论再给依据。"
             onChange={(e) => setDraftRole({ ...draftRole, rolePrompt: e.target.value })}
           />
+          <p style={hintStyle}>
+            只写一句能改变回答行为的话（顺序 / 粒度 / 风格）。写「你是资深 XX 工程师」这类人设对回答质量没有增量，只会占篇幅。
+          </p>
 
           <div style={{ display: 'flex', gap: 8, marginTop: 12 }}>
             <button
@@ -363,7 +368,10 @@ export function SettingsPage() {
             </optgroup>
           )}
         </select>
-        <p style={hintStyle}>仅在开启「启用角色化前缀」时写入提示词。</p>
+        <p style={hintStyle}>
+          默认不注入角色（数据对账这类任务加人设没有增量）。选中非「通用角色」并开启「注入角色行」后，
+          只会在开头加 1 句。
+        </p>
       </div>
 
       <div style={dividerStyle} />
@@ -384,16 +392,9 @@ export function SettingsPage() {
             <span>{text}</span>
           </label>
         ))}
-      </div>
-
-      <div style={fieldStyle}>
-        <label style={labelStyle}>追加的约束条款</label>
-        <textarea
-          style={{ ...inputStyle, minHeight: 64, resize: 'vertical' }}
-          value={rules.constraintsText}
-          onChange={(e) => setConfig({ localRules: { ...rules, constraintsText: e.target.value } })}
-          placeholder="使用 TypeScript 编写，代码带注释，错误处理完善"
-        />
+        <p style={hintStyle}>
+          本地规则只做「信息抽取 + 紧凑重组」，不追加通用套话，输出里不会出现任何占位符。
+        </p>
       </div>
 
       <div style={dividerStyle} />
