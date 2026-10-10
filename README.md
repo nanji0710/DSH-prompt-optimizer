@@ -2,7 +2,7 @@
 
 > 把「想到什么说什么」的一句话，一键变成 AI 听得懂、答得准的完整需求。
 
-![version](https://img.shields.io/badge/version-0.3.4-orange)
+![version](https://img.shields.io/badge/version-0.3.5-orange)
 ![dsh-version](https://img.shields.io/badge/DSH-v0.2.0--rc.2-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
@@ -37,7 +37,7 @@ dsh plugin add https://github.com/nanji0710/DSH-prompt-optimizer
 
 ```bash
 # 方式二：从 Releases 下载 .tgz 附件，再把文件名替换成你实际下载的那个
-dsh plugin add ./prompt-optimizer-0.3.4.tgz
+dsh plugin add ./prompt-optimizer-0.3.5.tgz
 ```
 
 > 下载地址：[Releases](https://github.com/nanji0710/DSH-prompt-optimizer/releases)
