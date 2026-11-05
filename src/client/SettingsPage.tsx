@@ -92,6 +92,19 @@ const buttonStyle: Record<string, string | number> = {
   cursor: 'pointer',
 }
 
+/**
+ * 原生 `<select>` 的下拉弹层由浏览器自己绘制，不继承页面的配色。
+ *
+ * 宿主没有给文档声明 `color-scheme`（整个前端 CSS 里一次都没出现），所以深色模式下
+ * 弹层仍按浅色绘制：白底 + 继承自深色主题的浅色文字 token，选项几乎看不见。
+ * 宿主靠 `body[data-ds-dark-theme]` 标记深色主题，这里据此给插件自己的下拉补上
+ * `color-scheme`，弹层底色与文字就会跟着页面主题走。用 CSS 而不是 JS 判断，切换主题时自动生效。
+ */
+const SELECT_THEME_CSS = [
+  'body[data-ds-dark-theme] [data-po-select]{color-scheme:dark}',
+  'body:not([data-ds-dark-theme]) [data-po-select]{color-scheme:light}',
+].join('\n')
+
 /** 「AI 接口」一节：模式、provider、模型、思考强度、温度。 */
 function ApiSection() {
   const cfg = useConfig()
@@ -153,6 +166,7 @@ function ApiSection() {
 
       <label style={labelStyle}>优化模式</label>
       <select
+        data-po-select
         style={inputStyle}
         value={cfg.optimizeMode}
         onChange={(e) => setConfig({ optimizeMode: e.target.value as 'local' | 'llm' })}
@@ -169,6 +183,7 @@ function ApiSection() {
           <div style={{ marginTop: 16 }}>
             <label style={labelStyle}>接口 / Provider</label>
             <select
+              data-po-select
               style={inputStyle}
               value={cfg.llmProvider}
               onChange={(e) => setConfig({ llmProvider: e.target.value })}
@@ -199,6 +214,7 @@ function ApiSection() {
           <div style={{ marginTop: 16 }}>
             <label style={labelStyle}>模型</label>
             <select
+              data-po-select
               style={inputStyle}
               value={cfg.llmModel}
               onChange={(e) => setConfig({ llmModel: e.target.value })}
@@ -238,6 +254,7 @@ function ApiSection() {
           <div style={{ marginTop: 16 }}>
             <label style={labelStyle}>思考强度</label>
             <select
+              data-po-select
               style={inputStyle}
               value={cfg.llmReasoningEffort}
               onChange={(e) => setConfig({ llmReasoningEffort: e.target.value })}
@@ -427,6 +444,7 @@ export function SettingsPage() {
 
   return (
     <div style={{ padding: '4px 0 24px', maxWidth: 560 }}>
+      <style>{SELECT_THEME_CSS}</style>
       <h3 style={{ margin: '0 0 6px', fontSize: 16, color: 'var(--dsw-alias-label-primary, inherit)' }}>
         ✨ 提示词优化助手
       </h3>
@@ -441,6 +459,7 @@ export function SettingsPage() {
       <div style={fieldStyle}>
         <label style={labelStyle}>优化角色</label>
         <select
+          data-po-select
           style={inputStyle}
           value={rules.currentRoleId}
           onChange={(e) => setConfig({ localRules: { ...rules, currentRoleId: e.target.value } })}

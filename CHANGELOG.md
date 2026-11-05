@@ -2,6 +2,16 @@
 
 本项目遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [0.3.6] - 2026-11-05
+
+修掉**深色模式下设置页下拉框看不清**的问题：展开下拉后弹层仍是白底，而选项文字继承的是深色主题的浅色 token，几乎看不见。
+
+### 修复
+- **原生 `<select>` 弹层不跟随主题**（`src/client/SettingsPage.tsx`）：`<select>` 的下拉列表由浏览器自己绘制，弹层底色取决于 CSS `color-scheme`。宿主的整个前端 CSS 里**一次都没声明** `color-scheme`，所以深色模式下弹层仍按浅色绘制，而选项文字用的是 `--dsw-alias-label-primary`（深色主题下是浅色），白底浅字 → 读不出来。
+- **修法**：宿主用 `body[data-ds-dark-theme]` 标记深色主题，据此给插件自己的下拉补上 `color-scheme`——`body[data-ds-dark-theme] [data-po-select]{color-scheme:dark}`，浅色时回 `light`。用 CSS 选择器而不是 JS 判断，**切换主题时自动生效**，不需要重新挂载组件。
+- **不污染宿主控件**：只作用于带 `data-po-select` 标记的 5 个下拉（优化模式 / 接口 / 模型 / 思考强度 / 优化角色），DSH 自己的控件一个都不碰。
+- 验证：headless 浏览器实测同一元素在三态下的 `getComputedStyle().colorScheme` = `light` → 打上 `data-ds-dark-theme` 后 `dark` → 去掉后回 `light`。
+
 ## [0.3.5] - 2026-10-10
 
 修掉两个用户实际遇到的问题：**插件列表里简介显示乱码**，以及**消息发出后 ✨ 按钮仍挂着「已优化」、点 ↩ 会把发送过的内容倒回输入框**。
