@@ -17,6 +17,7 @@ import { PRESET_ROLES } from '../config'
 import type { RoleItem } from '../config'
 import { useConfig, setConfig, resetConfig } from './store'
 import { isBridgeReady, requestModels, requestProviders, type ModelInfo, type ProviderInfo } from './bridge'
+import { Select, type SelectOption } from './Select'
 
 /**
  * 本地规则开关。
@@ -92,19 +93,6 @@ const buttonStyle: Record<string, string | number> = {
   cursor: 'pointer',
 }
 
-/**
- * 原生 `<select>` 的下拉弹层由浏览器自己绘制，不继承页面的配色。
- *
- * 宿主没有给文档声明 `color-scheme`（整个前端 CSS 里一次都没出现），所以深色模式下
- * 弹层仍按浅色绘制：白底 + 继承自深色主题的浅色文字 token，选项几乎看不见。
- * 宿主靠 `body[data-ds-dark-theme]` 标记深色主题，这里据此给插件自己的下拉补上
- * `color-scheme`，弹层底色与文字就会跟着页面主题走。用 CSS 而不是 JS 判断，切换主题时自动生效。
- */
-const SELECT_THEME_CSS = [
-  'body[data-ds-dark-theme] [data-po-select]{color-scheme:dark}',
-  'body:not([data-ds-dark-theme]) [data-po-select]{color-scheme:light}',
-].join('\n')
-
 /** 「AI 接口」一节：模式、provider、模型、思考强度、温度。 */
 function ApiSection() {
   const cfg = useConfig()
@@ -165,15 +153,15 @@ function ApiSection() {
       <h4 style={sectionTitleStyle}>AI 接口</h4>
 
       <label style={labelStyle}>优化模式</label>
-      <select
-        data-po-select
-        style={inputStyle}
+      <Select
+        label="优化模式"
         value={cfg.optimizeMode}
-        onChange={(e) => setConfig({ optimizeMode: e.target.value as 'local' | 'llm' })}
-      >
-        <option value="llm">大模型深度改写（推荐）</option>
-        <option value="local">本地规则（不调用模型，零成本）</option>
-      </select>
+        options={[
+          { value: 'llm', label: '大模型深度改写（推荐）' },
+          { value: 'local', label: '本地规则（不调用模型，零成本）' },
+        ]}
+        onChange={(value) => setConfig({ optimizeMode: value as 'local' | 'llm' })}
+      />
       <p style={hintStyle}>
         大模型改写会调用 DSH 已接入的模型接口；调用失败时自动降级为本地规则，不会中断操作。
       </p>
@@ -182,26 +170,30 @@ function ApiSection() {
         <>
           <div style={{ marginTop: 16 }}>
             <label style={labelStyle}>接口 / Provider</label>
-            <select
-              data-po-select
-              style={inputStyle}
+            <Select
+              label="接口 / Provider"
               value={cfg.llmProvider}
-              onChange={(e) => setConfig({ llmProvider: e.target.value })}
-            >
-              <option value="">
-                跟随 DSH 默认{defaultSelection?.provider ? `（${defaultSelection.provider}）` : ''}
-              </option>
-              {providers.map((provider) => (
-                <option key={provider.id} value={provider.id}>
-                  {provider.name}
-                  {provider.name === provider.id ? '' : `（${provider.id}）`}
-                </option>
-              ))}
-              {/* 已保存但宿主当前未注册的值：保留它，避免下拉 silently 改掉用户配置 */}
-              {cfg.llmProvider && !providers.some((p) => p.id === cfg.llmProvider) && (
-                <option value={cfg.llmProvider}>{cfg.llmProvider}（宿主未注册）</option>
-              )}
-            </select>
+              options={[
+                {
+                  value: '',
+                  label: `跟随 DSH 默认${
+                    defaultSelection?.provider ? `（${defaultSelection.provider}）` : ''
+                  }`,
+                },
+                ...providers.map((provider) => ({
+                  value: provider.id,
+                  label:
+                    provider.name === provider.id
+                      ? provider.name
+                      : `${provider.name}（${provider.id}）`,
+                })),
+                // 已保存但宿主当前未注册的值：保留它，避免下拉 silently 改掉用户配置
+                ...(cfg.llmProvider && !providers.some((p) => p.id === cfg.llmProvider)
+                  ? [{ value: cfg.llmProvider, label: `${cfg.llmProvider}（宿主未注册）` }]
+                  : []),
+              ]}
+              onChange={(value) => setConfig({ llmProvider: value })}
+            />
             <p style={hintStyle}>
               {bridgeReady
                 ? `宿主已注册 ${providers.length} 个接口。跟随 DSH 默认时实际使用：${
@@ -213,25 +205,26 @@ function ApiSection() {
 
           <div style={{ marginTop: 16 }}>
             <label style={labelStyle}>模型</label>
-            <select
-              data-po-select
-              style={inputStyle}
+            <Select
+              label="模型"
               value={cfg.llmModel}
-              onChange={(e) => setConfig({ llmModel: e.target.value })}
-            >
-              <option value="">
-                跟随 DSH 默认{defaultSelection?.model ? `（${defaultSelection.model}）` : ''}
-              </option>
-              {models.map((model) => (
-                <option key={model.id} value={model.id}>
-                  {model.name}
-                  {model.name === model.id ? '' : `（${model.id}）`}
-                </option>
-              ))}
-              {cfg.llmModel && !models.some((m) => m.id === cfg.llmModel) && (
-                <option value={cfg.llmModel}>{cfg.llmModel}（不在当前接口的列表中）</option>
-              )}
-            </select>
+              options={[
+                {
+                  value: '',
+                  label: `跟随 DSH 默认${
+                    defaultSelection?.model ? `（${defaultSelection.model}）` : ''
+                  }`,
+                },
+                ...models.map((model) => ({
+                  value: model.id,
+                  label: model.name === model.id ? model.name : `${model.name}（${model.id}）`,
+                })),
+                ...(cfg.llmModel && !models.some((m) => m.id === cfg.llmModel)
+                  ? [{ value: cfg.llmModel, label: `${cfg.llmModel}（不在当前接口的列表中）` }]
+                  : []),
+              ]}
+              onChange={(value) => setConfig({ llmModel: value })}
+            />
             <p style={hintStyle}>
               {loadingModels
                 ? `正在读取 ${effectiveProvider} 的模型列表…`
@@ -253,25 +246,24 @@ function ApiSection() {
 
           <div style={{ marginTop: 16 }}>
             <label style={labelStyle}>思考强度</label>
-            <select
-              data-po-select
-              style={inputStyle}
+            <Select
+              label="思考强度"
               value={cfg.llmReasoningEffort}
-              onChange={(e) => setConfig({ llmReasoningEffort: e.target.value })}
-            >
-              <option value="">自动（推荐）{autoEffort ? `：${autoEffort}` : ''}</option>
-              {efforts.map((effort) => (
-                <option key={effort.id} value={effort.id}>
-                  {effort.name}
-                  {effort.id === effort.name ? '' : `（${effort.id}）`}
-                </option>
-              ))}
-              {cfg.llmReasoningEffort && !efforts.some((x) => x.id === cfg.llmReasoningEffort) && (
-                <option value={cfg.llmReasoningEffort}>
-                  {cfg.llmReasoningEffort}（该模型不支持）
-                </option>
-              )}
-            </select>
+              options={[
+                { value: '', label: `自动（推荐）${autoEffort ? `：${autoEffort}` : ''}` },
+                ...efforts.map((effort) => ({
+                  value: effort.id,
+                  label:
+                    effort.id === effort.name
+                      ? effort.name
+                      : `${effort.name}（${effort.id}）`,
+                })),
+                ...(cfg.llmReasoningEffort && !efforts.some((x) => x.id === cfg.llmReasoningEffort)
+                  ? [{ value: cfg.llmReasoningEffort, label: `${cfg.llmReasoningEffort}（该模型不支持）` }]
+                  : []),
+              ]}
+              onChange={(value) => setConfig({ llmReasoningEffort: value })}
+            />
             <p style={hintStyle}>
               {efforts.length > 0
                 ? `可选档位由模型自己声明（${efforts.map((x) => x.id).join(' / ')}）。选「自动」时优先用模型默认档，没有则用最轻一档。`
@@ -444,7 +436,6 @@ export function SettingsPage() {
 
   return (
     <div style={{ padding: '4px 0 24px', maxWidth: 560 }}>
-      <style>{SELECT_THEME_CSS}</style>
       <h3 style={{ margin: '0 0 6px', fontSize: 16, color: 'var(--dsw-alias-label-primary, inherit)' }}>
         ✨ 提示词优化助手
       </h3>
@@ -458,29 +449,19 @@ export function SettingsPage() {
 
       <div style={fieldStyle}>
         <label style={labelStyle}>优化角色</label>
-        <select
-          data-po-select
-          style={inputStyle}
+        <Select
+          label="优化角色"
           value={rules.currentRoleId}
-          onChange={(e) => setConfig({ localRules: { ...rules, currentRoleId: e.target.value } })}
-        >
-          <optgroup label="内置角色">
-            {PRESET_ROLES.map((role) => (
-              <option key={role.id} value={role.id}>
-                {role.name}
-              </option>
-            ))}
-          </optgroup>
-          {rules.customRoles.length > 0 && (
-            <optgroup label="自定义角色">
-              {rules.customRoles.map((role) => (
-                <option key={role.id} value={role.id}>
-                  {role.name}
-                </option>
-              ))}
-            </optgroup>
-          )}
-        </select>
+          options={[
+            ...PRESET_ROLES.map((role) => ({ value: role.id, label: role.name, group: '内置角色' })),
+            ...rules.customRoles.map((role) => ({
+              value: role.id,
+              label: role.name,
+              group: '自定义角色',
+            })),
+          ]}
+          onChange={(value) => setConfig({ localRules: { ...rules, currentRoleId: value } })}
+        />
         <p style={hintStyle}>
           默认不注入角色（数据对账这类任务加人设没有增量）。选中非「通用角色」并开启「注入角色行」后，
           只会在开头加 1 句。

@@ -2,7 +2,7 @@
 
 > 把「想到什么说什么」的一句话，一键变成 AI 听得懂、答得准的完整需求。
 
-![version](https://img.shields.io/badge/version-0.3.6-orange)
+![version](https://img.shields.io/badge/version-0.3.7-orange)
 ![dsh-version](https://img.shields.io/badge/DSH-v0.2.0--rc.2-blue)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
